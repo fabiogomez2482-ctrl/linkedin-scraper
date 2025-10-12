@@ -152,12 +152,24 @@ async function loginToLinkedIn(page) {
 }
 
 // Extraer posts de un perfil
+// Extraer posts de un perfil
 async function scrapeProfilePosts(page, profileUrl, authorName, group) {
   try {
     log(`Extrayendo posts de: ${authorName}`);
     
-    // Ir al perfil y a la sección de actividad
-    const activityUrl = `${profileUrl}/recent-activity/all/`;
+    // Detectar tipo de perfil y construir URL correcta
+    let activityUrl;
+    if (profileUrl.includes('/company/')) {
+      // Para páginas de empresa
+      activityUrl = `${profileUrl.replace(/\/$/, '')}/posts/?feedView=all`;
+    } else if (profileUrl.includes('/in/')) {
+      // Para perfiles personales
+      activityUrl = `${profileUrl.replace(/\/$/, '')}/recent-activity/all/`;
+    } else {
+      log(`⚠️ Tipo de perfil no reconocido: ${profileUrl}`, 'error');
+      return 0;
+    }
+    
     await page.goto(activityUrl, {
       waitUntil: 'networkidle2',
       timeout: 30000
