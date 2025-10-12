@@ -368,7 +368,21 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
   try {
     log(`📊 Extrayendo posts de: ${authorName}`);
     
-    const activityUrl = `${profileUrl}/recent-activity/all/`;
+    // Detectar tipo de perfil y construir URL correcta
+    let activityUrl;
+    if (profileUrl.includes('/company/')) {
+      // Para páginas de empresa
+      activityUrl = `${profileUrl.replace(/\/$/, '')}/posts/?feedView=all`;
+      log(`🏢 Perfil de empresa detectado`);
+    } else if (profileUrl.includes('/in/')) {
+      // Para perfiles personales
+      activityUrl = `${profileUrl.replace(/\/$/, '')}/recent-activity/all/`;
+      log(`👤 Perfil personal detectado`);
+    } else {
+      log(`⚠️ Tipo de perfil no reconocido: ${profileUrl}`, 'error');
+      return 0;
+    }
+    
     const navigated = await safeGoto(page, activityUrl);
     
     if (!navigated) {
