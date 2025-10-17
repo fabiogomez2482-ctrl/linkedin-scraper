@@ -1,5 +1,5 @@
 // linkedin-scraper-hybrid.js
-// Solución semi-automática con recordatorios para renovar cookies
+// Versión mejorada con extracción robusta de métricas (likes, comments, shares)
 
 const puppeteer = require('puppeteer');
 const Airtable = require('airtable');
@@ -17,12 +17,8 @@ const CONFIG = {
   PAGE_TIMEOUT: 90000,
   MAX_RETRIES: 3,
   
-  // Días antes de avisar que cookies expirarán
   COOKIE_WARNING_DAYS: 5,
-  
-  // Email para notificaciones (opcional)
   NOTIFICATION_EMAIL: process.env.NOTIFICATION_EMAIL,
-  
   CRON_SCHEDULE: '0 */6 * * *',
 };
 
@@ -55,7 +51,7 @@ async function checkCookieExpiration() {
     
     if (!liAtCookie || !liAtCookie.expires) {
       log('Cookie li_at no encontrada o sin fecha de expiración', 'warning');
-      return { expired: false, daysLeft: 30 }; // Asumir 30 días por defecto
+      return { expired: false, daysLeft: 30 };
     }
     
     const expiryDate = new Date(liAtCookie.expires * 1000);
@@ -83,7 +79,6 @@ async function checkCookieExpiration() {
 
 async function sendCookieWarning(daysLeft) {
   try {
-    // Guardar en Airtable como recordatorio (solo si la tabla existe)
     try {
       await base('System Logs').create([{
         fields: {
@@ -95,19 +90,8 @@ async function sendCookieWarning(daysLeft) {
       }]);
       log('📧 Notificación de expiración guardada en Airtable', 'success');
     } catch (e) {
-      // Si la tabla no existe, solo loggear
       log(`⚠️ Las cookies expiran en ${daysLeft} días. Tabla System Logs no configurada.`, 'warning');
     }
-    
-    // TODO: Aquí podrías integrar un webhook a Slack, Discord, email, etc.
-    // Por ejemplo:
-    // await fetch(process.env.SLACK_WEBHOOK_URL, {
-    //   method: 'POST',
-    //   body: JSON.stringify({
-    //     text: `🔔 LinkedIn cookies expiran en ${daysLeft} días!`
-    //   })
-    // });
-    
   } catch (error) {
     log(`Error enviando notificación: ${error.message}`, 'warning');
   }
@@ -115,7 +99,6 @@ async function sendCookieWarning(daysLeft) {
 
 async function logScraperRun(success, postsScraped, error = null) {
   try {
-    // Solo si la tabla existe
     try {
       await base('Scraper Runs').create([{
         fields: {
@@ -127,11 +110,10 @@ async function logScraperRun(success, postsScraped, error = null) {
         }
       }]);
     } catch (e) {
-      // Tabla opcional, no es crítico
       log(`Tabla Scraper Runs no configurada (opcional)`, 'warning');
     }
   } catch (err) {
-    // Silencioso, no es crítico
+    // Silencioso
   }
 }
 
@@ -192,7 +174,6 @@ async function savePost(postData) {
         'Shares': postData.shares || 0,
         'Has Media': postData.hasMedia || false,
         'Media URL': postData.mediaUrl || ''
-        // Status removido temporalmente para evitar error
       }
     }]);
     return true;
@@ -333,7 +314,6 @@ async function loginWithCookies(page) {
 
 async function loginToLinkedIn(page) {
   try {
-    // Verificar expiración de cookies antes de intentar
     const cookieStatus = await checkCookieExpiration();
     
     if (cookieStatus.expired) {
@@ -342,7 +322,6 @@ async function loginToLinkedIn(page) {
       return false;
     }
     
-    // Intentar login con cookies
     const success = await loginWithCookies(page);
     
     if (!success) {
@@ -361,31 +340,27 @@ async function loginToLinkedIn(page) {
 }
 
 // ========================================
-// SCRAPING
+// SCRAPING CON MÉTRICAS MEJORADAS
 // ========================================
 
 async function scrapeProfilePosts(page, profileUrl, authorName, group) {
   try {
     log(`📊 Extrayendo posts de: ${authorName}`);
     
-    // Detectar tipo de perfil y construir URL correcta
     let activityUrl;
     if (profileUrl.includes('/company/')) {
-      // Para páginas de empresa
-      // Limpiar /post/ o /posts/ si ya existe
       const cleanUrl = profileUrl.replace(/\/(posts?\/?)$/, '');
       activityUrl = `${cleanUrl}/posts/?feedView=all`;
       log(`🏢 Perfil de empresa detectado`);
-      log(`🔗 URL construida: ${activityUrl}`);
     } else if (profileUrl.includes('/in/')) {
-      // Para perfiles personales
       activityUrl = `${profileUrl.replace(/\/$/, '')}/recent-activity/all/`;
       log(`👤 Perfil personal detectado`);
-      log(`🔗 URL construida: ${activityUrl}`);
     } else {
       log(`⚠️ Tipo de perfil no reconocido: ${profileUrl}`, 'error');
       return 0;
     }
+    
+    log(`🔗 URL: ${activityUrl}`);
     
     const navigated = await safeGoto(page, activityUrl);
     
@@ -394,44 +369,145 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
       return 0;
     }
     
-    await delay(5000); // Esperar más para que cargue el JavaScript
+    await delay(5000);
     
-    // Scroll gradual para cargar posts
-    log('Scrolleando para cargar contenido...');
+    log('📜 Scrolleando para cargar contenido...');
     for (let i = 0; i < 8; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight));
       await delay(2500);
     }
     
-    await delay(3000); // Esperar final
+    await delay(3000);
     
-    // Debug: Ver qué hay en la página
-    const pageInfo = await page.evaluate(() => {
-      return {
-        url: window.location.href,
-        title: document.title,
-        bodyLength: document.body.innerText.length,
-        hasContent: document.body.innerText.includes('post') || document.body.innerText.includes('activity')
-      };
-    });
-    
-    log(`Debug - URL: ${pageInfo.url}, Title: ${pageInfo.title}`);
-    
-    // Extraer posts con selectores actualizados 2025
+    // Extraer posts CON MÉTRICAS MEJORADAS
     const posts = await page.evaluate((maxPosts) => {
       const results = [];
       
-      // Selectores actualizados para LinkedIn 2025
+      // Función auxiliar para extraer números de texto
+      function extractNumber(text) {
+        if (!text) return 0;
+        
+        // Remover texto y mantener solo números
+        const cleaned = text.replace(/[^\d,\.KMB]/gi, '').trim();
+        
+        if (!cleaned) return 0;
+        
+        // Manejar notación K, M, B
+        let multiplier = 1;
+        if (text.toUpperCase().includes('K')) multiplier = 1000;
+        if (text.toUpperCase().includes('M')) multiplier = 1000000;
+        if (text.toUpperCase().includes('B')) multiplier = 1000000000;
+        
+        // Parsear el número
+        const num = parseFloat(cleaned.replace(/,/g, ''));
+        return isNaN(num) ? 0 : Math.round(num * multiplier);
+      }
+      
+      // Función mejorada para extraer métricas
+      function extractMetrics(postElement) {
+        const metrics = { likes: 0, comments: 0, shares: 0 };
+        
+        try {
+          // ESTRATEGIA 1: Buscar contenedor de métricas sociales
+          const socialActionsBar = postElement.querySelector('.social-details-social-activity, .social-details-social-counts');
+          
+          if (socialActionsBar) {
+            // Buscar likes/reacciones
+            const reactionButton = socialActionsBar.querySelector('[aria-label*="reaction"], button[aria-label*="Like"], span[aria-hidden="true"]');
+            if (reactionButton) {
+              const reactionText = reactionButton.textContent || reactionButton.getAttribute('aria-label') || '';
+              metrics.likes = extractNumber(reactionText);
+            }
+            
+            // Buscar comentarios
+            const commentButton = socialActionsBar.querySelector('[aria-label*="comment"]');
+            if (commentButton) {
+              const commentText = commentButton.textContent || commentButton.getAttribute('aria-label') || '';
+              metrics.comments = extractNumber(commentText);
+            }
+            
+            // Buscar reposts/shares
+            const shareButton = socialActionsBar.querySelector('[aria-label*="repost"], [aria-label*="share"]');
+            if (shareButton) {
+              const shareText = shareButton.textContent || shareButton.getAttribute('aria-label') || '';
+              metrics.shares = extractNumber(shareText);
+            }
+          }
+          
+          // ESTRATEGIA 2: Buscar en botones de acción
+          if (metrics.likes === 0 || metrics.comments === 0) {
+            const actionButtons = postElement.querySelectorAll('button[aria-label], .social-details-social-counts__item');
+            
+            actionButtons.forEach(btn => {
+              const label = btn.getAttribute('aria-label') || btn.textContent || '';
+              const lowerLabel = label.toLowerCase();
+              
+              if (lowerLabel.includes('like') || lowerLabel.includes('reaction')) {
+                const num = extractNumber(label);
+                if (num > metrics.likes) metrics.likes = num;
+              }
+              
+              if (lowerLabel.includes('comment')) {
+                const num = extractNumber(label);
+                if (num > metrics.comments) metrics.comments = num;
+              }
+              
+              if (lowerLabel.includes('repost') || lowerLabel.includes('share')) {
+                const num = extractNumber(label);
+                if (num > metrics.shares) metrics.shares = num;
+              }
+            });
+          }
+          
+          // ESTRATEGIA 3: Buscar spans con números cerca de iconos
+          if (metrics.likes === 0) {
+            const spans = postElement.querySelectorAll('span.social-details-social-counts__reactions-count, span[aria-hidden="true"]');
+            spans.forEach(span => {
+              const text = span.textContent;
+              if (text && /\d/.test(text)) {
+                const num = extractNumber(text);
+                if (num > 0 && num > metrics.likes && num < 1000000) {
+                  // Verificar contexto para asegurar que es likes
+                  const parent = span.closest('.social-details-social-activity');
+                  if (parent) {
+                    metrics.likes = num;
+                  }
+                }
+              }
+            });
+          }
+          
+          // ESTRATEGIA 4: Buscar en lista de contadores sociales
+          const socialCounts = postElement.querySelectorAll('.social-details-social-counts__item');
+          socialCounts.forEach(item => {
+            const text = item.textContent || '';
+            const label = item.getAttribute('aria-label') || '';
+            const combined = (text + ' ' + label).toLowerCase();
+            
+            if (combined.includes('comment')) {
+              metrics.comments = extractNumber(combined);
+            }
+            if (combined.includes('repost') || combined.includes('share')) {
+              metrics.shares = extractNumber(combined);
+            }
+          });
+          
+          console.log(`Métricas extraídas: ${metrics.likes} likes, ${metrics.comments} comments, ${metrics.shares} shares`);
+          
+        } catch (err) {
+          console.error('Error extrayendo métricas:', err);
+        }
+        
+        return metrics;
+      }
+      
+      // Selectores de posts
       const selectors = [
         'div.feed-shared-update-v2',
         'li.profile-creator-shared-feed-update__container',
-        'div.feed-shared-update-v2__content',
-        'div[data-urn*="activity"]',
-        'div[data-id*="activity"]',
         'article.feed-shared-update-v2',
         'li.profile-creator-shared-feed-update',
-        '.scaffold-finite-scroll__content > div',
-        'div.feed-shared-actor__container'
+        'div[data-urn*="activity"]'
       ];
       
       let postElements = [];
@@ -441,14 +517,13 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
         postElements = document.querySelectorAll(selector);
         if (postElements.length > 0) {
           usedSelector = selector;
-          console.log(`✓ Encontrados ${postElements.length} elementos con: ${selector}`);
+          console.log(`✓ Encontrados ${postElements.length} posts con: ${selector}`);
           break;
         }
       }
       
       if (postElements.length === 0) {
-        console.log('⚠️ No se encontraron posts con ningún selector');
-        console.log('HTML preview:', document.body.innerHTML.substring(0, 500));
+        console.log('⚠️ No se encontraron posts');
         return [];
       }
       
@@ -456,15 +531,13 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
         const post = postElements[i];
         
         try {
-          // Múltiples estrategias para encontrar contenido
+          // Extraer contenido
           const contentSelectors = [
             '.feed-shared-update-v2__description',
             '.update-components-text',
             '.feed-shared-inline-show-more-text',
             '.break-words',
-            '.feed-shared-text',
-            '[data-test-id="main-feed-activity-card__commentary"]',
-            '.feed-shared-text__text-view'
+            '[data-test-id="main-feed-activity-card__commentary"]'
           ];
           
           let content = '';
@@ -476,7 +549,6 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
             }
           }
           
-          // Si no hay contenido, intentar buscar en todo el post
           if (!content) {
             const spans = post.querySelectorAll('span[dir="ltr"]');
             for (const span of spans) {
@@ -488,41 +560,23 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
           }
           
           if (!content || content.length < 10) {
-            console.log(`Post ${i}: Sin contenido suficiente`);
+            console.log(`Post ${i}: Sin contenido`);
             continue;
           }
           
-          // Buscar fecha
-          const timeSelectors = ['time', '[datetime]', '.feed-shared-actor__sub-description'];
+          // Extraer fecha
           let date = new Date().toISOString();
-          
-          for (const sel of timeSelectors) {
-            const timeEl = post.querySelector(sel);
-            if (timeEl) {
-              date = timeEl.getAttribute('datetime') || timeEl.innerText || date;
-              break;
-            }
+          const timeEl = post.querySelector('time, [datetime]');
+          if (timeEl) {
+            date = timeEl.getAttribute('datetime') || timeEl.innerText || date;
           }
           
-          // Buscar URL del post
+          // Extraer URL
           let postUrl = '';
-          const linkSelectors = [
-            'a[href*="/posts/"]',
-            'a[href*="/activity-"]',
-            'a[data-control-name="update"]',
-            'a.app-aware-link'
-          ];
-          
-          for (const sel of linkSelectors) {
-            const linkEl = post.querySelector(sel);
-            if (linkEl && linkEl.href) {
-              postUrl = linkEl.href;
-              break;
-            }
-          }
-          
-          // Si no hay URL, intentar construir desde data-urn
-          if (!postUrl) {
+          const linkEl = post.querySelector('a[href*="/posts/"], a[href*="/activity-"]');
+          if (linkEl) {
+            postUrl = linkEl.href;
+          } else {
             const urn = post.getAttribute('data-urn') || post.getAttribute('data-id');
             if (urn) {
               postUrl = `https://www.linkedin.com/feed/update/${urn}`;
@@ -534,57 +588,42 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
             continue;
           }
           
-          // Buscar métricas
-          let likes = 0;
-          let comments = 0;
-          
-          const reactionElements = post.querySelectorAll('[aria-label*="reaction"]');
-          reactionElements.forEach(el => {
-            const text = el.innerText || el.getAttribute('aria-label') || '';
-            const match = text.match(/(\d+[\d,\.]*)/);
-            if (match) {
-              const num = parseInt(match[1].replace(/[,\.]/g, ''));
-              if (text.toLowerCase().includes('comment')) {
-                comments = num;
-              } else {
-                likes = num;
-              }
-            }
-          });
+          // EXTRAER MÉTRICAS (mejorado)
+          const metrics = extractMetrics(post);
           
           // Detectar media
           const hasImage = post.querySelector('img[src*="media"], img[src*="dms/image"]') !== null;
           const hasVideo = post.querySelector('video, [data-test-id="video"]') !== null;
-          const hasMedia = hasImage || hasVideo;
           
           results.push({
-            content: content.substring(0, 1000), // Limitar a 1000 caracteres
+            content: content.substring(0, 1000),
             date,
             postUrl,
-            likes,
-            comments,
-            shares: 0,
-            hasMedia,
+            likes: metrics.likes,
+            comments: metrics.comments,
+            shares: metrics.shares,
+            hasMedia: hasImage || hasVideo,
             mediaUrl: ''
           });
           
-          console.log(`✓ Post ${i} extraído: ${content.substring(0, 50)}...`);
+          console.log(`✓ Post ${i}: ${content.substring(0, 40)}... [${metrics.likes}L ${metrics.comments}C ${metrics.shares}S]`);
           
         } catch (err) {
-          console.error(`Error extrayendo post ${i}:`, err.message);
+          console.error(`Error en post ${i}:`, err.message);
         }
       }
       
       return results;
     }, CONFIG.MAX_POSTS_PER_PROFILE);
     
-    log(`Encontrados ${posts.length} posts`);
+    log(`📝 Encontrados ${posts.length} posts`);
     
-    if (posts.length === 0) {
-      log('No se encontraron posts. Posibles razones:', 'warning');
-      log('1. El perfil no tiene actividad reciente', 'warning');
-      log('2. El perfil es privado o no visible', 'warning');
-      log('3. LinkedIn cambió su estructura HTML', 'warning');
+    // Mostrar resumen de métricas
+    if (posts.length > 0) {
+      const totalLikes = posts.reduce((sum, p) => sum + p.likes, 0);
+      const totalComments = posts.reduce((sum, p) => sum + p.comments, 0);
+      const totalShares = posts.reduce((sum, p) => sum + p.shares, 0);
+      log(`📊 Total: ${totalLikes} likes, ${totalComments} comments, ${totalShares} shares`);
     }
     
     let newPostsCount = 0;
@@ -599,7 +638,10 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
           ...post
         });
         
-        if (saved) newPostsCount++;
+        if (saved) {
+          newPostsCount++;
+          log(`  ✓ Guardado: ${post.likes}L ${post.comments}C ${post.shares}S`);
+        }
         await delay(500);
       }
     }
@@ -626,7 +668,6 @@ async function runScraper() {
   let error = null;
   
   try {
-    // Verificar estado de cookies al inicio
     await checkCookieExpiration();
     
     const profiles = await getActiveProfiles();
@@ -694,7 +735,6 @@ async function runScraper() {
       await browser.close();
     }
     
-    // Log del run
     await logScraperRun(success, totalNewPosts, error);
   }
 }
