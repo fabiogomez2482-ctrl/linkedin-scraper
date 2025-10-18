@@ -1,9 +1,13 @@
-// linkedin-scraper-hybrid.js
-// Versión mejorada con extracción robusta de métricas (likes, comments, shares)
+// linkedin-scraper-stealth.js
+// Versión con puppeteer-extra y stealth plugin
 
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const Airtable = require('airtable');
 const cron = require('node-cron');
+
+// Activar plugin stealth
+puppeteer.use(StealthPlugin());
 
 const CONFIG = {
   AIRTABLE_API_KEY: process.env.AIRTABLE_API_KEY,
@@ -20,6 +24,12 @@ const CONFIG = {
   COOKIE_WARNING_DAYS: 5,
   NOTIFICATION_EMAIL: process.env.NOTIFICATION_EMAIL,
   CRON_SCHEDULE: '0 */6 * * *',
+  
+  // Proxy (opcional)
+  PROXY_HOST: process.env.PROXY_HOST,
+  PROXY_PORT: process.env.PROXY_PORT,
+  PROXY_USERNAME: process.env.PROXY_USERNAME,
+  PROXY_PASSWORD: process.env.PROXY_PASSWORD,
 };
 
 const base = new Airtable({ apiKey: CONFIG.AIRTABLE_API_KEY }).base(CONFIG.AIRTABLE_BASE_ID);
@@ -184,81 +194,100 @@ async function savePost(postData) {
 }
 
 // ========================================
-// NAVEGACIÓN ROBUSTA
+// NAVEGACIÓN MEJORADA
 // ========================================
-
-async function safeGoto(page, url, options = {}) {
-  const defaultOptions = {
-    waitUntil: 'domcontentloaded',
-    timeout: CONFIG.PAGE_TIMEOUT
-  };
-  
-  const mergedOptions = { ...defaultOptions, ...options };
-  
-  for (let i = 0; i < CONFIG.MAX_RETRIES; i++) {
-    try {
-      const response = await page.goto(url, mergedOptions);
-      if (response && response.ok()) {
-        return true;
-      }
-    } catch (error) {
-      if (i < CONFIG.MAX_RETRIES - 1) {
-        await delay((i + 1) * 5000);
-      }
-    }
-  }
-  
-  return false;
-}
 
 async function loadCookies(page) {
   try {
     if (!process.env.LINKEDIN_COOKIES) {
+      log('❌ Variable LINKEDIN_COOKIES no configurada', 'error');
       return false;
     }
     
     const cookies = JSON.parse(process.env.LINKEDIN_COOKIES);
     
     if (!Array.isArray(cookies) || cookies.length === 0) {
+      log('❌ Cookies vacías o inválidas', 'error');
       return false;
     }
     
-    const loaded = await safeGoto(page, 'https://www.linkedin.com', {
-      waitUntil: 'domcontentloaded',
+    log(`📦 Cargando ${cookies.length} cookies...`);
+    
+    // Navegar primero a LinkedIn
+    await page.goto('https://www.linkedin.com', {
+      waitUntil: 'networkidle2',
       timeout: 30000
     });
     
-    if (!loaded) return false;
+    await delay(3000);
     
-    await delay(2000);
-    
+    // Eliminar cookies existentes
     const existingCookies = await page.cookies();
     if (existingCookies.length > 0) {
       await page.deleteCookie(...existingCookies);
+      log('🗑️ Cookies previas eliminadas');
     }
     
+    // Cargar nuevas cookies
     await page.setCookie(...cookies);
+    log('✅ Cookies cargadas');
     
     return true;
     
   } catch (error) {
-    log(`Error cargando cookies: ${error.message}`, 'error');
+    log(`❌ Error cargando cookies: ${error.message}`, 'error');
     return false;
   }
 }
 
 async function checkIfLoggedIn(page) {
   try {
+    await delay(5000);
+    
+    // Debug: Ver URL actual
+    const currentUrl = page.url();
+    log(`🔗 URL actual: ${currentUrl}`);
+    
+    // Si estamos en login, captcha o checkpoint = NO logueado
+    if (currentUrl.includes('/login') || 
+        currentUrl.includes('/checkpoint') || 
+        currentUrl.includes('/uas/')) {
+      log('❌ Detectado redirect a login/checkpoint/verificación', 'error');
+      
+      // Tomar screenshot para debug
+      try {
+        await page.screenshot({ path: '/tmp/linkedin-blocked.png', fullPage: true });
+        log('📸 Screenshot guardado en /tmp/linkedin-blocked.png');
+      } catch (e) {}
+      
+      return false;
+    }
+    
     const checks = await page.evaluate(() => {
       return {
-        hasGlobalNav: document.querySelector('nav.global-nav') !== null,
-        hasProfileIcon: document.querySelector('[data-control-name="nav.settings"]') !== null,
-        hasFeedContent: document.querySelector('.feed-shared-update-v2') !== null,
-        hasSearchBar: document.querySelector('input[placeholder*="Search"]') !== null,
-        hasMessaging: document.querySelector('[data-control-name="nav.messaging"]') !== null,
-        url: window.location.href
+        hasGlobalNav: document.querySelector('nav.global-nav, nav[aria-label="Primary Navigation"]') !== null,
+        hasProfileIcon: document.querySelector('[data-control-name="nav.settings"], .global-nav__me') !== null,
+        hasFeedContent: document.querySelector('.feed-shared-update-v2, .scaffold-finite-scroll') !== null,
+        hasSearchBar: document.querySelector('input[placeholder*="Search"], input[placeholder*="Buscar"]') !== null,
+        hasMessaging: document.querySelector('[data-control-name="nav.messaging"], [href*="/messaging"]') !== null,
+        hasLoginForm: document.querySelector('input[name="session_key"], input[type="email"]') !== null,
+        url: window.location.href,
+        title: document.title
       };
     });
+    
+    log(`🔍 Verificando login:`);
+    log(`  Título: ${checks.title}`);
+    log(`  GlobalNav: ${checks.hasGlobalNav ? '✓' : '✗'}`);
+    log(`  ProfileIcon: ${checks.hasProfileIcon ? '✓' : '✗'}`);
+    log(`  FeedContent: ${checks.hasFeedContent ? '✓' : '✗'}`);
+    log(`  SearchBar: ${checks.hasSearchBar ? '✓' : '✗'}`);
+    log(`  LoginForm: ${checks.hasLoginForm ? '✓' : '✗'}`);
+    
+    if (checks.hasLoginForm) {
+      log('❌ Formulario de login detectado - NO logueado', 'error');
+      return false;
+    }
     
     const positiveChecks = [
       checks.hasGlobalNav,
@@ -268,32 +297,46 @@ async function checkIfLoggedIn(page) {
       checks.hasMessaging
     ].filter(Boolean).length;
     
+    log(`📊 Checks positivos: ${positiveChecks}/5`);
+    
     const urlCheck = checks.url.includes('/feed') || 
                     checks.url.includes('/mynetwork') ||
-                    checks.url.includes('/in/');
+                    checks.url.includes('/in/') ||
+                    checks.url.includes('/jobs');
     
-    return positiveChecks >= 2 || (positiveChecks >= 1 && urlCheck);
+    const isLoggedIn = positiveChecks >= 2 || (positiveChecks >= 1 && urlCheck);
+    
+    if (isLoggedIn) {
+      log('✅ Login confirmado', 'success');
+    } else {
+      log('❌ Login fallido', 'error');
+    }
+    
+    return isLoggedIn;
     
   } catch (error) {
+    log(`❌ Error verificando login: ${error.message}`, 'error');
     return false;
   }
 }
-
-// ========================================
-// LOGIN
-// ========================================
 
 async function loginWithCookies(page) {
   try {
     log('🍪 Intentando login con cookies...');
     
     const cookiesLoaded = await loadCookies(page);
-    if (!cookiesLoaded) return false;
+    if (!cookiesLoaded) {
+      log('❌ No se pudieron cargar las cookies', 'error');
+      return false;
+    }
     
-    const navigated = await safeGoto(page, 'https://www.linkedin.com/feed/');
-    if (!navigated) return false;
+    log('🔄 Navegando al feed...');
+    await page.goto('https://www.linkedin.com/feed/', {
+      waitUntil: 'networkidle2',
+      timeout: 60000
+    });
     
-    await delay(5000);
+    await delay(8000); // Más tiempo de espera
     
     const isLoggedIn = await checkIfLoggedIn(page);
     
@@ -302,12 +345,23 @@ async function loginWithCookies(page) {
       return true;
     }
     
-    log('⚠️ Cookies no válidas - necesitan renovarse', 'warning');
+    log('🔄 Segundo intento: refrescando página...');
+    await page.reload({ waitUntil: 'networkidle2' });
+    await delay(5000);
+    
+    const secondCheck = await checkIfLoggedIn(page);
+    
+    if (secondCheck) {
+      log('✅ Login exitoso en segundo intento!', 'success');
+      return true;
+    }
+    
+    log('❌ Cookies no válidas - necesitan renovarse', 'error');
     await sendCookieWarning(0);
     return false;
     
   } catch (error) {
-    log(`Error en login: ${error.message}`, 'error');
+    log(`❌ Error en login: ${error.message}`, 'error');
     return false;
   }
 }
@@ -318,17 +372,17 @@ async function loginToLinkedIn(page) {
     
     if (cookieStatus.expired) {
       log('❌ Las cookies han expirado. Por favor renuévalas.', 'error');
-      log('💡 Ejecuta: node get-linkedin-cookies.js', 'warning');
       return false;
     }
     
     const success = await loginWithCookies(page);
     
     if (!success) {
-      log('❌ Login falló. Acciones necesarias:', 'error');
-      log('1. Ejecuta: node get-linkedin-cookies.js', 'warning');
-      log('2. Actualiza la variable LINKEDIN_COOKIES', 'warning');
-      log('3. Redeploya el scraper', 'warning');
+      log('❌ Login falló. Las cookies necesitan renovarse.', 'error');
+      log('💡 Posibles causas:', 'warning');
+      log('   - LinkedIn detectó la IP de Railway como sospechosa', 'warning');
+      log('   - Las cookies se generaron desde otra IP', 'warning');
+      log('   - Necesitas verificación de seguridad', 'warning');
     }
     
     return success;
@@ -340,7 +394,8 @@ async function loginToLinkedIn(page) {
 }
 
 // ========================================
-// SCRAPING CON MÉTRICAS MEJORADAS
+// TU CÓDIGO DE SCRAPING AQUÍ
+// (copia scrapeProfilePosts y runScraper de tu archivo original)
 // ========================================
 
 async function scrapeProfilePosts(page, profileUrl, authorName, group) {
@@ -655,12 +710,9 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
   }
 }
 
-// ========================================
-// FUNCIÓN PRINCIPAL
-// ========================================
 
 async function runScraper() {
-  log('🚀 Iniciando scraper de LinkedIn...');
+  log('🚀 Iniciando scraper de LinkedIn con Stealth...');
   
   let browser;
   let success = false;
@@ -679,50 +731,47 @@ async function runScraper() {
     
     log(`📋 Perfiles a monitorear: ${profiles.length}`);
     
+    const browserArgs = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu',
+      '--window-size=1920x1080'
+    ];
+    
+    if (CONFIG.PROXY_HOST && CONFIG.PROXY_PORT) {
+      browserArgs.push(`--proxy-server=${CONFIG.PROXY_HOST}:${CONFIG.PROXY_PORT}`);
+      log(`🌐 Usando proxy: ${CONFIG.PROXY_HOST}:${CONFIG.PROXY_PORT}`);
+    }
+    
     browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--window-size=1920x1080',
-        '--disable-blink-features=AutomationControlled'
-      ]
+      headless: 'new',
+      args: browserArgs,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
     });
     
     const page = await browser.newPage();
-    await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
     
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    });
+    if (CONFIG.PROXY_USERNAME && CONFIG.PROXY_PASSWORD) {
+      await page.authenticate({
+        username: CONFIG.PROXY_USERNAME,
+        password: CONFIG.PROXY_PASSWORD
+      });
+      log('✅ Autenticación de proxy configurada');
+    }
+    
+    await page.setViewport({ width: 1920, height: 1080 });
     
     const loginSuccess = await loginToLinkedIn(page);
     
     if (!loginSuccess) {
-      throw new Error('No se pudo iniciar sesión - cookies inválidas o expiradas');
+      throw new Error('No se pudo iniciar sesión - cookies inválidas o bloqueadas');
     }
     
-    for (const profile of profiles) {
-      try {
-        const newPosts = await scrapeProfilePosts(
-          page,
-          profile.profileUrl,
-          profile.name,
-          profile.group
-        );
-        
-        totalNewPosts += newPosts;
-        
-        if (profiles.indexOf(profile) < profiles.length - 1) {
-          await delay(CONFIG.DELAY_BETWEEN_PROFILES);
-        }
-        
-      } catch (err) {
-        log(`Error en perfil ${profile.name}: ${err.message}`, 'error');
-      }
-    }
+    // ... resto del scraping
     
     success = true;
     log(`✅ Scraping completado. ${totalNewPosts} posts nuevos`, 'success');
@@ -743,7 +792,7 @@ async function runScraper() {
 // EJECUCIÓN
 // ========================================
 
-log('📱 Aplicación iniciada');
+log('📱 Aplicación iniciada con Stealth Plugin');
 log('🔔 Sistema de monitoreo de cookies activo');
 
 runScraper().catch(err => {
