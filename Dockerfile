@@ -35,7 +35,7 @@ WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm ci --only=production
+RUN npm install --production
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 RUN npx puppeteer browsers install chrome
