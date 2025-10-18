@@ -1,20 +1,22 @@
 {
   "name": "linkedin-scraper",
-  "version": "1.0.0",
-  "description": "LinkedIn post scraper con Airtable",
-  "main": "linkedin-scraper-hybrid.js",
+  "version": "2.0.0",
+  "description": "LinkedIn scraper with stealth for Railway",
+  "main": "linkedin-scraper.js",
   "scripts": {
-    "start": "node linkedin-scraper-hybrid.js"
-  },
-  "engines": {
-    "node": "18.x"
+    "start": "node linkedin-scraper.js",
+    "test": "echo \"No tests specified\""
   },
   "dependencies": {
-    "puppeteer": "^22.15.0",
+    "puppeteer": "^21.6.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "node-cron": "^3.0.3",
     "airtable": "^0.12.2",
-    "dotenv": "^16.4.5"
-  }
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "",
+  "license": "MIT"
 }
