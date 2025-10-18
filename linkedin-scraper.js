@@ -2,6 +2,50 @@
 // Versión con puppeteer-extra y stealth plugin
 
 const puppeteer = require('puppeteer-extra');
+const { execSync } = require('child_process');
+const fs = require('fs');
+
+// Función para encontrar Chrome automáticamente
+function findChromePath() {
+  try {
+    // Intentar encontrar Chrome en ubicaciones comunes
+    const possiblePaths = [
+      '/root/.cache/puppeteer/chrome/linux-131.0.6778.85/chrome-linux64/chrome',
+      '/root/.cache/puppeteer/chrome/linux-130.0.6723.69/chrome-linux64/chrome',
+      '/root/.cache/puppeteer/chrome/linux-129.0.6668.70/chrome-linux64/chrome',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/google-chrome'
+    ];
+    
+    // Verificar cada path
+    for (const path of possiblePaths) {
+      if (fs.existsSync(path)) {
+        console.log(`✅ Chrome encontrado en: ${path}`);
+        return path;
+      }
+    }
+    
+    // Buscar dinámicamente
+    try {
+      const result = execSync('find /root/.cache/puppeteer -name chrome -type f 2>/dev/null || echo ""').toString().trim();
+      if (result) {
+        const chromePath = result.split('\n')[0];
+        console.log(`✅ Chrome encontrado dinámicamente: ${chromePath}`);
+        return chromePath;
+      }
+    } catch (e) {
+      console.log('⚠️ No se pudo buscar Chrome dinámicamente');
+    }
+    
+    console.log('⚠️ Chrome no encontrado, usando configuración por defecto');
+    return undefined;
+    
+  } catch (error) {
+    console.log(`⚠️ Error buscando Chrome: ${error.message}`);
+    return undefined;
+  }
+}
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const Airtable = require('airtable');
 const cron = require('node-cron');
@@ -747,10 +791,12 @@ async function runScraper() {
       log(`🌐 Usando proxy: ${CONFIG.PROXY_HOST}:${CONFIG.PROXY_PORT}`);
     }
     
+    const chromePath = findChromePath();
+
     browser = await puppeteer.launch({
       headless: 'new',
       args: browserArgs,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
+      executablePath: chromePath
     });
     
     const page = await browser.newPage();
