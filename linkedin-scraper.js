@@ -1,51 +1,9 @@
 // linkedin-scraper-stealth.js
-// Versión con puppeteer-extra y stealth plugin
+// Versión corregida para Railway con mejor manejo de errores
 
 const puppeteer = require('puppeteer-extra');
 const { execSync } = require('child_process');
 const fs = require('fs');
-
-// Función para encontrar Chrome automáticamente
-function findChromePath() {
-  try {
-    // Intentar encontrar Chrome en ubicaciones comunes
-    const possiblePaths = [
-      '/root/.cache/puppeteer/chrome/linux-131.0.6778.85/chrome-linux64/chrome',
-      '/root/.cache/puppeteer/chrome/linux-130.0.6723.69/chrome-linux64/chrome',
-      '/root/.cache/puppeteer/chrome/linux-129.0.6668.70/chrome-linux64/chrome',
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/google-chrome'
-    ];
-    
-    // Verificar cada path
-    for (const path of possiblePaths) {
-      if (fs.existsSync(path)) {
-        console.log(`✅ Chrome encontrado en: ${path}`);
-        return path;
-      }
-    }
-    
-    // Buscar dinámicamente
-    try {
-      const result = execSync('find /root/.cache/puppeteer -name chrome -type f 2>/dev/null || echo ""').toString().trim();
-      if (result) {
-        const chromePath = result.split('\n')[0];
-        console.log(`✅ Chrome encontrado dinámicamente: ${chromePath}`);
-        return chromePath;
-      }
-    } catch (e) {
-      console.log('⚠️ No se pudo buscar Chrome dinámicamente');
-    }
-    
-    console.log('⚠️ Chrome no encontrado, usando configuración por defecto');
-    return undefined;
-    
-  } catch (error) {
-    console.log(`⚠️ Error buscando Chrome: ${error.message}`);
-    return undefined;
-  }
-}
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const Airtable = require('airtable');
 const cron = require('node-cron');
@@ -69,7 +27,7 @@ const CONFIG = {
   NOTIFICATION_EMAIL: process.env.NOTIFICATION_EMAIL,
   CRON_SCHEDULE: '0 */6 * * *',
   
-  // Proxy (opcional)
+  // Proxy (opcional pero RECOMENDADO para Railway)
   PROXY_HOST: process.env.PROXY_HOST,
   PROXY_PORT: process.env.PROXY_PORT,
   PROXY_USERNAME: process.env.PROXY_USERNAME,
@@ -88,6 +46,46 @@ const log = (message, type = 'info') => {
   const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : type === 'warning' ? '⚠️' : 'ℹ️';
   console.log(`${prefix} [${timestamp}] ${message}`);
 };
+
+// Función para encontrar Chrome automáticamente
+function findChromePath() {
+  try {
+    const possiblePaths = [
+      '/root/.cache/puppeteer/chrome/linux-131.0.6778.85/chrome-linux64/chrome',
+      '/root/.cache/puppeteer/chrome/linux-130.0.6723.69/chrome-linux64/chrome',
+      '/root/.cache/puppeteer/chrome/linux-129.0.6668.70/chrome-linux64/chrome',
+      '/root/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/google-chrome'
+    ];
+    
+    for (const path of possiblePaths) {
+      if (fs.existsSync(path)) {
+        log(`✅ Chrome encontrado en: ${path}`);
+        return path;
+      }
+    }
+    
+    try {
+      const result = execSync('find /root/.cache/puppeteer -name chrome -type f 2>/dev/null || echo ""').toString().trim();
+      if (result) {
+        const chromePath = result.split('\n')[0];
+        log(`✅ Chrome encontrado dinámicamente: ${chromePath}`);
+        return chromePath;
+      }
+    } catch (e) {
+      log('⚠️ No se pudo buscar Chrome dinámicamente');
+    }
+    
+    log('⚠️ Chrome no encontrado, usando configuración por defecto');
+    return undefined;
+    
+  } catch (error) {
+    log(`⚠️ Error buscando Chrome: ${error.message}`);
+    return undefined;
+  }
+}
 
 // ========================================
 // GESTIÓN DE COOKIES Y ESTADO
@@ -238,8 +236,58 @@ async function savePost(postData) {
 }
 
 // ========================================
-// NAVEGACIÓN MEJORADA
+// NAVEGACIÓN MEJORADA - CORREGIDA
 // ========================================
+
+async function safeGoto(page, url, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      log(`🔄 Navegando a: ${url} (intento ${i + 1}/${retries})`);
+      
+      const response = await page.goto(url, {
+        waitUntil: ['domcontentloaded', 'networkidle0'],
+        timeout: CONFIG.PAGE_TIMEOUT
+      });
+      
+      await delay(3000);
+      
+      const currentUrl = page.url();
+      
+      // Verificar si hay error de conexión
+      if (currentUrl.includes('chrome-error://')) {
+        log(`❌ Error de conexión detectado: ${currentUrl}`, 'error');
+        if (i < retries - 1) {
+          log(`⏳ Esperando 10s antes de reintentar...`);
+          await delay(10000);
+          continue;
+        }
+        return false;
+      }
+      
+      // Verificar si la respuesta fue exitosa
+      if (response && response.status() >= 400) {
+        log(`⚠️ Respuesta HTTP ${response.status()}`, 'warning');
+        if (i < retries - 1) continue;
+      }
+      
+      log(`✅ Navegación exitosa a: ${currentUrl}`, 'success');
+      return true;
+      
+    } catch (error) {
+      log(`⚠️ Error navegando (intento ${i + 1}): ${error.message}`, 'warning');
+      
+      if (i < retries - 1) {
+        const waitTime = (i + 1) * 5000;
+        log(`⏳ Esperando ${waitTime/1000}s antes de reintentar...`);
+        await delay(waitTime);
+      } else {
+        log(`❌ No se pudo navegar después de ${retries} intentos`, 'error');
+        return false;
+      }
+    }
+  }
+  return false;
+}
 
 async function loadCookies(page) {
   try {
@@ -257,11 +305,13 @@ async function loadCookies(page) {
     
     log(`📦 Cargando ${cookies.length} cookies...`);
     
-    // Navegar primero a LinkedIn
-    await page.goto('https://www.linkedin.com', {
-      waitUntil: 'networkidle2',
-      timeout: 30000
-    });
+    // Navegar primero a LinkedIn con reintentos
+    const navigated = await safeGoto(page, 'https://www.linkedin.com');
+    
+    if (!navigated) {
+      log('❌ No se pudo cargar la página inicial de LinkedIn', 'error');
+      return false;
+    }
     
     await delay(3000);
     
@@ -272,9 +322,18 @@ async function loadCookies(page) {
       log('🗑️ Cookies previas eliminadas');
     }
     
-    // Cargar nuevas cookies
-    await page.setCookie(...cookies);
-    log('✅ Cookies cargadas');
+    // Cargar nuevas cookies con validación
+    const validCookies = cookies.filter(cookie => {
+      return cookie.name && cookie.value && cookie.domain;
+    });
+    
+    if (validCookies.length === 0) {
+      log('❌ No hay cookies válidas para cargar', 'error');
+      return false;
+    }
+    
+    await page.setCookie(...validCookies);
+    log(`✅ ${validCookies.length} cookies cargadas`);
     
     return true;
     
@@ -288,9 +347,14 @@ async function checkIfLoggedIn(page) {
   try {
     await delay(5000);
     
-    // Debug: Ver URL actual
     const currentUrl = page.url();
     log(`🔗 URL actual: ${currentUrl}`);
+    
+    // Verificar errores de conexión primero
+    if (currentUrl.includes('chrome-error://')) {
+      log('❌ Error de conexión - no se puede verificar login', 'error');
+      return false;
+    }
     
     // Si estamos en login, captcha o checkpoint = NO logueado
     if (currentUrl.includes('/login') || 
@@ -298,7 +362,6 @@ async function checkIfLoggedIn(page) {
         currentUrl.includes('/uas/')) {
       log('❌ Detectado redirect a login/checkpoint/verificación', 'error');
       
-      // Tomar screenshot para debug
       try {
         await page.screenshot({ path: '/tmp/linkedin-blocked.png', fullPage: true });
         log('📸 Screenshot guardado en /tmp/linkedin-blocked.png');
@@ -375,12 +438,14 @@ async function loginWithCookies(page) {
     }
     
     log('🔄 Navegando al feed...');
-    await page.goto('https://www.linkedin.com/feed/', {
-      waitUntil: 'networkidle2',
-      timeout: 60000
-    });
+    const navigated = await safeGoto(page, 'https://www.linkedin.com/feed/');
     
-    await delay(8000); // Más tiempo de espera
+    if (!navigated) {
+      log('❌ No se pudo navegar al feed', 'error');
+      return false;
+    }
+    
+    await delay(8000);
     
     const isLoggedIn = await checkIfLoggedIn(page);
     
@@ -390,7 +455,7 @@ async function loginWithCookies(page) {
     }
     
     log('🔄 Segundo intento: refrescando página...');
-    await page.reload({ waitUntil: 'networkidle2' });
+    await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
     await delay(5000);
     
     const secondCheck = await checkIfLoggedIn(page);
@@ -427,6 +492,8 @@ async function loginToLinkedIn(page) {
       log('   - LinkedIn detectó la IP de Railway como sospechosa', 'warning');
       log('   - Las cookies se generaron desde otra IP', 'warning');
       log('   - Necesitas verificación de seguridad', 'warning');
+      log('   - Problemas de conectividad de red', 'warning');
+      log('   - SOLUCIÓN RECOMENDADA: Usar un proxy residencial', 'warning');
     }
     
     return success;
@@ -438,8 +505,7 @@ async function loginToLinkedIn(page) {
 }
 
 // ========================================
-// TU CÓDIGO DE SCRAPING AQUÍ
-// (copia scrapeProfilePosts y runScraper de tu archivo original)
+// SCRAPING DE POSTS
 // ========================================
 
 async function scrapeProfilePosts(page, profileUrl, authorName, group) {
@@ -478,54 +544,43 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
     
     await delay(3000);
     
-    // Extraer posts CON MÉTRICAS MEJORADAS
+    // Extraer posts con métricas
     const posts = await page.evaluate((maxPosts) => {
       const results = [];
       
-      // Función auxiliar para extraer números de texto
       function extractNumber(text) {
         if (!text) return 0;
-        
-        // Remover texto y mantener solo números
         const cleaned = text.replace(/[^\d,\.KMB]/gi, '').trim();
-        
         if (!cleaned) return 0;
         
-        // Manejar notación K, M, B
         let multiplier = 1;
         if (text.toUpperCase().includes('K')) multiplier = 1000;
         if (text.toUpperCase().includes('M')) multiplier = 1000000;
         if (text.toUpperCase().includes('B')) multiplier = 1000000000;
         
-        // Parsear el número
         const num = parseFloat(cleaned.replace(/,/g, ''));
         return isNaN(num) ? 0 : Math.round(num * multiplier);
       }
       
-      // Función mejorada para extraer métricas
       function extractMetrics(postElement) {
         const metrics = { likes: 0, comments: 0, shares: 0 };
         
         try {
-          // ESTRATEGIA 1: Buscar contenedor de métricas sociales
           const socialActionsBar = postElement.querySelector('.social-details-social-activity, .social-details-social-counts');
           
           if (socialActionsBar) {
-            // Buscar likes/reacciones
             const reactionButton = socialActionsBar.querySelector('[aria-label*="reaction"], button[aria-label*="Like"], span[aria-hidden="true"]');
             if (reactionButton) {
               const reactionText = reactionButton.textContent || reactionButton.getAttribute('aria-label') || '';
               metrics.likes = extractNumber(reactionText);
             }
             
-            // Buscar comentarios
             const commentButton = socialActionsBar.querySelector('[aria-label*="comment"]');
             if (commentButton) {
               const commentText = commentButton.textContent || commentButton.getAttribute('aria-label') || '';
               metrics.comments = extractNumber(commentText);
             }
             
-            // Buscar reposts/shares
             const shareButton = socialActionsBar.querySelector('[aria-label*="repost"], [aria-label*="share"]');
             if (shareButton) {
               const shareText = shareButton.textContent || shareButton.getAttribute('aria-label') || '';
@@ -533,7 +588,6 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
             }
           }
           
-          // ESTRATEGIA 2: Buscar en botones de acción
           if (metrics.likes === 0 || metrics.comments === 0) {
             const actionButtons = postElement.querySelectorAll('button[aria-label], .social-details-social-counts__item');
             
@@ -558,41 +612,6 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
             });
           }
           
-          // ESTRATEGIA 3: Buscar spans con números cerca de iconos
-          if (metrics.likes === 0) {
-            const spans = postElement.querySelectorAll('span.social-details-social-counts__reactions-count, span[aria-hidden="true"]');
-            spans.forEach(span => {
-              const text = span.textContent;
-              if (text && /\d/.test(text)) {
-                const num = extractNumber(text);
-                if (num > 0 && num > metrics.likes && num < 1000000) {
-                  // Verificar contexto para asegurar que es likes
-                  const parent = span.closest('.social-details-social-activity');
-                  if (parent) {
-                    metrics.likes = num;
-                  }
-                }
-              }
-            });
-          }
-          
-          // ESTRATEGIA 4: Buscar en lista de contadores sociales
-          const socialCounts = postElement.querySelectorAll('.social-details-social-counts__item');
-          socialCounts.forEach(item => {
-            const text = item.textContent || '';
-            const label = item.getAttribute('aria-label') || '';
-            const combined = (text + ' ' + label).toLowerCase();
-            
-            if (combined.includes('comment')) {
-              metrics.comments = extractNumber(combined);
-            }
-            if (combined.includes('repost') || combined.includes('share')) {
-              metrics.shares = extractNumber(combined);
-            }
-          });
-          
-          console.log(`Métricas extraídas: ${metrics.likes} likes, ${metrics.comments} comments, ${metrics.shares} shares`);
-          
         } catch (err) {
           console.error('Error extrayendo métricas:', err);
         }
@@ -600,7 +619,6 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
         return metrics;
       }
       
-      // Selectores de posts
       const selectors = [
         'div.feed-shared-update-v2',
         'li.profile-creator-shared-feed-update__container',
@@ -610,15 +628,9 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
       ];
       
       let postElements = [];
-      let usedSelector = '';
-      
       for (const selector of selectors) {
         postElements = document.querySelectorAll(selector);
-        if (postElements.length > 0) {
-          usedSelector = selector;
-          console.log(`✓ Encontrados ${postElements.length} posts con: ${selector}`);
-          break;
-        }
+        if (postElements.length > 0) break;
       }
       
       if (postElements.length === 0) {
@@ -630,13 +642,11 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
         const post = postElements[i];
         
         try {
-          // Extraer contenido
           const contentSelectors = [
             '.feed-shared-update-v2__description',
             '.update-components-text',
             '.feed-shared-inline-show-more-text',
-            '.break-words',
-            '[data-test-id="main-feed-activity-card__commentary"]'
+            '.break-words'
           ];
           
           let content = '';
@@ -648,49 +658,24 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
             }
           }
           
-          if (!content) {
-            const spans = post.querySelectorAll('span[dir="ltr"]');
-            for (const span of spans) {
-              if (span.innerText && span.innerText.trim().length > 20) {
-                content = span.innerText.trim();
-                break;
-              }
-            }
-          }
+          if (!content || content.length < 10) continue;
           
-          if (!content || content.length < 10) {
-            console.log(`Post ${i}: Sin contenido`);
-            continue;
-          }
-          
-          // Extraer fecha
           let date = new Date().toISOString();
           const timeEl = post.querySelector('time, [datetime]');
           if (timeEl) {
             date = timeEl.getAttribute('datetime') || timeEl.innerText || date;
           }
           
-          // Extraer URL
           let postUrl = '';
           const linkEl = post.querySelector('a[href*="/posts/"], a[href*="/activity-"]');
           if (linkEl) {
             postUrl = linkEl.href;
-          } else {
-            const urn = post.getAttribute('data-urn') || post.getAttribute('data-id');
-            if (urn) {
-              postUrl = `https://www.linkedin.com/feed/update/${urn}`;
-            }
           }
           
-          if (!postUrl) {
-            console.log(`Post ${i}: Sin URL`);
-            continue;
-          }
+          if (!postUrl) continue;
           
-          // EXTRAER MÉTRICAS (mejorado)
           const metrics = extractMetrics(post);
           
-          // Detectar media
           const hasImage = post.querySelector('img[src*="media"], img[src*="dms/image"]') !== null;
           const hasVideo = post.querySelector('video, [data-test-id="video"]') !== null;
           
@@ -705,8 +690,6 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
             mediaUrl: ''
           });
           
-          console.log(`✓ Post ${i}: ${content.substring(0, 40)}... [${metrics.likes}L ${metrics.comments}C ${metrics.shares}S]`);
-          
         } catch (err) {
           console.error(`Error en post ${i}:`, err.message);
         }
@@ -717,7 +700,6 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
     
     log(`📝 Encontrados ${posts.length} posts`);
     
-    // Mostrar resumen de métricas
     if (posts.length > 0) {
       const totalLikes = posts.reduce((sum, p) => sum + p.likes, 0);
       const totalComments = posts.reduce((sum, p) => sum + p.comments, 0);
@@ -754,7 +736,6 @@ async function scrapeProfilePosts(page, profileUrl, authorName, group) {
   }
 }
 
-
 async function runScraper() {
   log('🚀 Iniciando scraper de LinkedIn con Stealth...');
   
@@ -775,6 +756,7 @@ async function runScraper() {
     
     log(`📋 Perfiles a monitorear: ${profiles.length}`);
     
+    // Argumentos mejorados para Railway
     const browserArgs = [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -782,12 +764,20 @@ async function runScraper() {
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--single-process', // ← IMPORTANTE para Railway
+      '--single-process',
       '--disable-gpu',
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
       '--window-size=1920x1080',
-      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+      // Mejorar estabilidad de red
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-extensions',
+      '--disable-sync',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-default-browser-check'
     ];
     
     if (CONFIG.PROXY_HOST && CONFIG.PROXY_PORT) {
@@ -802,10 +792,15 @@ async function runScraper() {
       args: browserArgs,
       executablePath: chromePath,
       ignoreHTTPSErrors: true,
-      dumpio: true // Ver errores de Chrome en los logs
+      dumpio: false, // Cambiar a false para reducir logs
+      defaultViewport: null
     });
     
     const page = await browser.newPage();
+    
+    // Configurar timeouts más largos
+    page.setDefaultTimeout(CONFIG.PAGE_TIMEOUT);
+    page.setDefaultNavigationTimeout(CONFIG.PAGE_TIMEOUT);
     
     if (CONFIG.PROXY_USERNAME && CONFIG.PROXY_PASSWORD) {
       await page.authenticate({
@@ -817,23 +812,64 @@ async function runScraper() {
     
     await page.setViewport({ width: 1920, height: 1080 });
     
+    // Interceptar requests para mejorar velocidad (opcional)
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const resourceType = req.resourceType();
+      // Bloquear recursos pesados innecesarios
+      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+    
     const loginSuccess = await loginToLinkedIn(page);
     
     if (!loginSuccess) {
-      throw new Error('No se pudo iniciar sesión - cookies inválidas o bloqueadas');
+      throw new Error('No se pudo iniciar sesión - cookies inválidas o bloqueadas por IP');
     }
     
-    // ... resto del scraping
+    // Scraping de perfiles
+    log('🎯 Iniciando extracción de posts...');
+    
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i];
+      
+      log(`\n[${i + 1}/${profiles.length}] Procesando: ${profile.name}`);
+      
+      try {
+        const newPosts = await scrapeProfilePosts(
+          page,
+          profile.profileUrl,
+          profile.name,
+          profile.group
+        );
+        
+        totalNewPosts += newPosts;
+        
+        if (i < profiles.length - 1) {
+          const waitTime = CONFIG.DELAY_BETWEEN_PROFILES;
+          log(`⏳ Esperando ${waitTime/1000}s antes del siguiente perfil...`);
+          await delay(waitTime);
+        }
+        
+      } catch (error) {
+        log(`❌ Error procesando ${profile.name}: ${error.message}`, 'error');
+        continue;
+      }
+    }
     
     success = true;
-    log(`✅ Scraping completado. ${totalNewPosts} posts nuevos`, 'success');
+    log(`\n✅ Scraping completado. ${totalNewPosts} posts nuevos guardados`, 'success');
     
   } catch (err) {
     error = err.message;
-    log(`❌ Error: ${error}`, 'error');
+    log(`❌ Error fatal: ${error}`, 'error');
   } finally {
     if (browser) {
       await browser.close();
+      log('🔒 Browser cerrado');
     }
     
     await logScraperRun(success, totalNewPosts, error);
@@ -841,21 +877,36 @@ async function runScraper() {
 }
 
 // ========================================
-// EJECUCIÓN
+// EJECUCIÓN PRINCIPAL
 // ========================================
 
 log('📱 Aplicación iniciada con Stealth Plugin');
 log('🔔 Sistema de monitoreo de cookies activo');
 
+// Verificar variables de entorno críticas
+if (!process.env.LINKEDIN_COOKIES) {
+  log('❌ ERROR: Variable LINKEDIN_COOKIES no configurada', 'error');
+  log('💡 Por favor configura las cookies en Railway', 'warning');
+  process.exit(1);
+}
+
+if (!process.env.AIRTABLE_API_KEY || !process.env.AIRTABLE_BASE_ID) {
+  log('❌ ERROR: Variables de Airtable no configuradas', 'error');
+  process.exit(1);
+}
+
+// Ejecutar inmediatamente
 runScraper().catch(err => {
   log(`Error fatal: ${err.message}`, 'error');
+  process.exit(1);
 });
 
+// Programar ejecuciones periódicas
 cron.schedule(CONFIG.CRON_SCHEDULE, () => {
   log('⏰ Ejecutando tarea programada...');
   runScraper().catch(err => {
-    log(`Error: ${err.message}`, 'error');
+    log(`Error en tarea programada: ${err.message}`, 'error');
   });
 });
 
-log(`⏱️ Cron: ${CONFIG.CRON_SCHEDULE}`);
+log(`⏱️ Cron configurado: ${CONFIG.CRON_SCHEDULE}`);
