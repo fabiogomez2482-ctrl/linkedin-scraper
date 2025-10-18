@@ -71,4 +71,4 @@ EXPOSE 3000
 RUN mkdir -p /tmp
 
 # Comando de inicio
-CMD ["node", "linkedin-scraper-stealth.js"]
+CMD ["node", "linkedin-scraper.js"]
