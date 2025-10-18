@@ -782,8 +782,12 @@ async function runScraper() {
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
+      '--single-process', // ← IMPORTANTE para Railway
       '--disable-gpu',
-      '--window-size=1920x1080'
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--window-size=1920x1080',
+      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
     ];
     
     if (CONFIG.PROXY_HOST && CONFIG.PROXY_PORT) {
@@ -796,7 +800,9 @@ async function runScraper() {
     browser = await puppeteer.launch({
       headless: 'new',
       args: browserArgs,
-      executablePath: chromePath
+      executablePath: chromePath,
+      ignoreHTTPSErrors: true,
+      dumpio: true // Ver errores de Chrome en los logs
     });
     
     const page = await browser.newPage();
