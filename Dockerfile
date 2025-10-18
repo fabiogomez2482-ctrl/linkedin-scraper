@@ -48,7 +48,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Instalar dependencias de Node.js
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 # Instalar Chromium para Puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
