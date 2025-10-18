@@ -1,9 +1,3 @@
-touch .dockerignore
-code .dockerignore
-```
-
-**Contenido:**
-```
 node_modules
 npm-debug.log
 .env
