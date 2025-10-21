@@ -2,9 +2,9 @@
   "name": "linkedin-scraper",
   "version": "2.0.0",
   "description": "LinkedIn scraper with stealth for Railway",
-  "main": "linkedin-scraper-stealth.js",
+  "main": "linkedin-scraper.js",
   "scripts": {
-    "start": "node linkedin-scraper-stealth.js",
+    "start": "node linkedin-scraper.js",
     "test": "echo \"No tests specified\""
   },
   "dependencies": {
