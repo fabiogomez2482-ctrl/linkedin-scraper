@@ -40,12 +40,14 @@ ENV PORT=3000
 WORKDIR /app
 
 # ---- Copiar e instalar dependencias ----
-COPY package.json ./
-RUN npm install --omit=dev --legacy-peer-deps
+COPY package*.json ./
+RUN npm install --omit=dev
 
 # ---- Copiar el resto del código ----
 COPY . .
 
 # ---- Exponer puerto y ejecutar ----
 EXPOSE 3000
-CMD ["node", "linkedin-scraper.js"]
+
+# ---- Comando de inicio ----
+CMD ["npm", "start"]

@@ -1,24 +1,12 @@
 {
   "name": "linkedin-scraper",
-  "version": "2.0.0",
-  "description": "LinkedIn scraper with stealth for Railway",
+  "version": "1.0.0",
+  "description": "LinkedIn Scraper using Puppeteer",
   "main": "linkedin-scraper.js",
   "scripts": {
-    "start": "node linkedin-scraper.js",
-    "test": "echo \"No tests specified\""
+    "start": "node linkedin-scraper.js"
   },
   "dependencies": {
-    "puppeteer": "24.15.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "airtable": "^0.12.2",
-    "node-cron": "^3.0.3",
-    "express": "^4.19.2",
-    "dotenv": "^16.3.1"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "author": "",
-  "license": "MIT"
+    "puppeteer": "22.15.0"
+  }
 }

@@ -3,7 +3,7 @@
  * Autor: Bryan + GPT-5
  */
 
-import puppeteer from 'puppeteer';
+const puppeteer = require('puppeteer');
 import Airtable from 'airtable';
 import dotenv from 'dotenv';
 import express from 'express';
