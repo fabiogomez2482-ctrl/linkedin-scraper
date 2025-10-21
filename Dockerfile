@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Variables de entorno ----
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV NODE_ENV=production
 ENV PORT=3000
@@ -38,10 +39,11 @@ ENV PORT=3000
 # ---- Crear directorio de la app ----
 WORKDIR /app
 
-# ---- Copiar archivos de la app ----
+# ---- Copiar e instalar dependencias ----
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev --legacy-peer-deps
 
+# ---- Copiar código fuente ----
 COPY . .
 
 # ---- Exponer puerto y ejecutar ----
