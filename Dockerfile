@@ -1,7 +1,7 @@
 # Dockerfile optimizado para Railway
 FROM node:18-slim
 
-# Instalar dependencias del sistema para Puppeteer
+# Instalar dependencias del sistema para Puppeteer (NECESARIO)
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -39,6 +39,9 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     lsb-release \
     xdg-utils \
+    # AÑADIR chromium y unlinker para el manejo de Chromium
+    chromium \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Establecer directorio de trabajo
@@ -47,15 +50,12 @@ WORKDIR /app
 # Copiar package files
 COPY package*.json ./
 
-# Instalar dependencias de Node.js
+# Instalar dependencias de Node.js, incluyendo Puppeteer
 RUN npm install --omit=dev
 
-# Instalar Chromium para Puppeteer
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
+# Establecer la ruta del ejecutable para Puppeteer
+# Esto le dice a Puppeteer dónde encontrar el Chromium que instalamos arriba.
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-
-RUN npx puppeteer browsers install chrome || \
-    echo "Chrome installation failed, will try to find it at runtime"
 
 # Copiar código de la aplicación
 COPY . .
@@ -70,5 +70,5 @@ EXPOSE 3000
 # Crear directorio para screenshots
 RUN mkdir -p /tmp
 
-# Comando de inicio
-CMD ["node", "linkedin-scraper.js"]
+# Comando de inicio usando ENTRYPOINT para mayor robustez
+ENTRYPOINT ["node", "linkedin-scraper.js"]

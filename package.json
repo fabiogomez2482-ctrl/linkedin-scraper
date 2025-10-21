@@ -12,7 +12,8 @@
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "airtable": "^0.12.2",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "express": "^4.19.2"
   },
   "engines": {
     "node": ">=18.0.0"
