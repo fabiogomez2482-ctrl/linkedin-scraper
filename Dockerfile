@@ -51,7 +51,7 @@ COPY package*.json ./
 RUN npm install --omit=dev
 
 # Instalar Chromium para Puppeteer
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 RUN npx puppeteer browsers install chrome || \

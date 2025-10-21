@@ -1,5 +1,5 @@
 // linkedin-scraper-stealth.js
-// Versión corregida para Railway con mejor manejo de errores
+// Versión corregida para Railway con mejor manejo de errores si si 
 
 const puppeteer = require('puppeteer-extra');
 const { execSync } = require('child_process');
