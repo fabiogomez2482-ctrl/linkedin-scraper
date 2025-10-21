@@ -1,74 +1,49 @@
-# Dockerfile optimizado para Railway
+# ---- Base image ----
 FROM node:18-slim
 
-# Instalar dependencias del sistema para Puppeteer
+# ---- Instalar dependencias del sistema necesarias para Chromium ----
 RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-driver \
     wget \
+    gnupg \
     ca-certificates \
     fonts-liberation \
-    libasound2 \
     libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libc6 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libexpat1 \
-    libfontconfig1 \
-    libgbm1 \
-    libgcc1 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
     libnss3 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libstdc++6 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
     libxss1 \
-    libxtst6 \
-    lsb-release \
-    xdg-utils \
+    libasound2 \
+    libatk1.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libgbm1 \
+    libxcomposite1 \
+    libxrandr2 \
+    libxdamage1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libatspi2.0-0 \
+    libx11-xcb1 \
+    libxfixes3 \
+    libxext6 \
+    libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Establecer directorio de trabajo
-WORKDIR /app
-
-# Copiar package files
-COPY package*.json ./
-
-# Instalar dependencias de Node.js
-RUN npm install --omit=dev
-
-# Instalar Chromium para Puppeteer
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+# ---- Variables de entorno ----
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-
-RUN npx puppeteer browsers install chrome || \
-    echo "Chrome installation failed, will try to find it at runtime"
-
-# Copiar código de la aplicación
-COPY . .
-
-# Variables de entorno
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Exponer puerto (Railway lo asigna automáticamente)
+# ---- Crear directorio de la app ----
+WORKDIR /app
+
+# ---- Copiar archivos de la app ----
+COPY package*.json ./
+RUN npm install --omit=dev
+
+COPY . .
+
+# ---- Exponer puerto y ejecutar ----
 EXPOSE 3000
-
-# Crear directorio para screenshots
-RUN mkdir -p /tmp
-
-# Comando de inicio
 CMD ["node", "linkedin-scraper.js"]
