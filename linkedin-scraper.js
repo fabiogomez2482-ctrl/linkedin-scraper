@@ -1,4 +1,3 @@
-linkedinscraper
 // linkedin-scraper-stealth.js
 // Versión corregida para Railway con mejor manejo de errores
 
