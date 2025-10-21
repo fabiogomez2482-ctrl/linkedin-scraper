@@ -1,4 +1,4 @@
-# ---- Base image ----
+# ---- Imagen base ----
 FROM node:18-slim
 
 # ---- Instalar dependencias del sistema necesarias para Chromium ----
@@ -40,10 +40,10 @@ ENV PORT=3000
 WORKDIR /app
 
 # ---- Copiar e instalar dependencias ----
-COPY package*.json ./
-RUN npm ci --omit=dev --legacy-peer-deps
+COPY package.json ./
+RUN npm install --omit=dev --legacy-peer-deps
 
-# ---- Copiar código fuente ----
+# ---- Copiar el resto del código ----
 COPY . .
 
 # ---- Exponer puerto y ejecutar ----
