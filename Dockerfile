@@ -5,9 +5,6 @@ FROM node:18-slim
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
-    wget \
-    gnupg \
-    ca-certificates \
     fonts-liberation \
     libatk-bridge2.0-0 \
     libnss3 \
@@ -28,7 +25,10 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxext6 \
     libexpat1 \
-    && rm -rf /var/lib/apt/lists/*
+    wget \
+    ca-certificates \
+    --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
 
 # ---- Variables de entorno ----
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
@@ -40,14 +40,12 @@ ENV PORT=3000
 WORKDIR /app
 
 # ---- Copiar e instalar dependencias ----
-COPY package*.json ./
-RUN npm install --omit=dev
+COPY package.json ./
+RUN npm install --omit=dev --legacy-peer-deps
 
 # ---- Copiar el resto del código ----
 COPY . .
 
 # ---- Exponer puerto y ejecutar ----
 EXPOSE 3000
-
-# ---- Comando de inicio ----
 CMD ["npm", "start"]

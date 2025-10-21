@@ -1,10 +1,10 @@
 {
-  "name": "linkedin-scraper",
+  "name": "linkedin-scraper-stealth",
   "version": "1.0.0",
   "description": "LinkedIn Scraper using Puppeteer",
-  "main": "linkedin-scraper.js",
+  "main": "linkedin-scraper-stealth.js",
   "scripts": {
-    "start": "node linkedin-scraper.js"
+    "start": "node linkedin-scraper-stealth.js"
   },
   "dependencies": {
     "puppeteer": "22.15.0"
