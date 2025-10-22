@@ -1,23 +1,18 @@
 {
-  "name": "linkedin-scraper",
+  "name": "linkedin-scraper-apify",
   "version": "2.0.0",
-  "description": "LinkedIn scraper with stealth for Railway",
-  "main": "linkedin-scraper.js",
+  "description": "LinkedIn scraper using Apify Actor (Bridge to Airtable)",
+  "main": "apify-bridge.js",
   "scripts": {
-    "start": "node linkedin-scraper.js",
-    "test": "echo \"No tests specified\""
+    "start": "node apify-bridge.js",
+    "test": "node -e \"console.log('ok')\""
   },
   "dependencies": {
-    "puppeteer": "^21.6.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "airtable": "^0.12.2",
-    "node-cron": "^3.0.3",
-    "express": "^4.19.2"
+    "axios": "^1.7.0"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "author": "",
   "license": "MIT"
 }
