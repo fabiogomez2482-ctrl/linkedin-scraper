@@ -1,8 +1,9 @@
 // linkedin-scraper-stealth.js
-// Versión optimizada para Railway con soporte de PROXY_URL y variables separadas
-// - Autenticación automática del proxy (Bright Data)
-// - Intercepción de requests sin bloquear 'stylesheet'
-// - Manejo robusto de navegación y cookies
+// Versión optimizada para Railway + Bright Data (proxy OBLIGATORIO)
+// - Autenticación automática del proxy (URL o variables separadas)
+// - Verificación de salida por proxy antes de LinkedIn
+// - Intercepción sin bloquear 'stylesheet'
+// - Manejo robusto de navegación/cookies
 
 const puppeteer = require('puppeteer-extra');
 const { execSync } = require('child_process');
@@ -11,14 +12,11 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const Airtable = require('airtable');
 const cron = require('node-cron');
 
-// Activar plugin stealth
 puppeteer.use(StealthPlugin());
 
 const CONFIG = {
   AIRTABLE_API_KEY: process.env.AIRTABLE_API_KEY,
   AIRTABLE_BASE_ID: process.env.AIRTABLE_BASE_ID,
-  LINKEDIN_EMAIL: process.env.LINKEDIN_EMAIL,
-  LINKEDIN_PASSWORD: process.env.LINKEDIN_PASSWORD,
 
   // Scraping
   MAX_POSTS_PER_PROFILE: 10,
@@ -29,31 +27,31 @@ const CONFIG = {
 
   // Cookies/alertas
   COOKIE_WARNING_DAYS: 5,
-  NOTIFICATION_EMAIL: process.env.NOTIFICATION_EMAIL,
   CRON_SCHEDULE: '0 */6 * * *',
 
-  // Proxy (cualquiera de las 2 opciones)
-  PROXY_URL: process.env.PROXY_URL, // p.ej. http://user:pass@brd.superproxy.io:33335
-  PROXY_HOST: process.env.PROXY_HOST,
-  PROXY_PORT: process.env.PROXY_PORT,
-  PROXY_USERNAME: process.env.PROXY_USERNAME,
-  PROXY_PASSWORD: process.env.PROXY_PASSWORD,
+  // Proxy (OBLIGATORIO en este despliegue)
+  PROXY_URL: process.env.PROXY_URL,
+  PROXY_HOST: (process.env.PROXY_HOST || '').trim(),
+  PROXY_PORT: (process.env.PROXY_PORT || '').trim(),
+  PROXY_USERNAME: (process.env.PROXY_USERNAME || '').trim(),
+  PROXY_PASSWORD: (process.env.PROXY_PASSWORD || '').trim(),
+
+  // Hard-fail si no hay proxy
+  REQUIRE_PROXY: true,
 };
 
 const base = new Airtable({ apiKey: CONFIG.AIRTABLE_API_KEY }).base(CONFIG.AIRTABLE_BASE_ID);
 
-// ========================================
-// UTILIDADES
-// ========================================
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-const log = (message, type = 'info') => {
-  const timestamp = new Date().toISOString();
-  const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : type === 'warning' ? '⚠️' : 'ℹ️';
-  console.log(`${prefix} [${timestamp}] ${message}`);
+// =============== Utils ===============
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
+const log = (m, type='info') => {
+  const t = new Date().toISOString();
+  const p = type === 'error' ? '❌' : type === 'success' ? '✅' :
+            type === 'warning' ? '⚠️' : 'ℹ️';
+  console.log(`${p} [${t}] ${m}`);
 };
 
-// Función para encontrar Chrome automáticamente
+// Chrome path autodetect
 function findChromePath() {
   try {
     const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -61,49 +59,30 @@ function findChromePath() {
       log(`✅ Chrome desde PUPPETEER_EXECUTABLE_PATH: ${envPath}`);
       return envPath;
     }
-
-    const possiblePaths = [
+    const candidates = [
       '/root/.cache/puppeteer/chrome/linux-131.0.6778.85/chrome-linux64/chrome',
       '/root/.cache/puppeteer/chrome/linux-130.0.6723.69/chrome-linux64/chrome',
       '/root/.cache/puppeteer/chrome/linux-129.0.6668.70/chrome-linux64/chrome',
       '/root/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/google-chrome'
+      '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'
     ];
-
-    for (const path of possiblePaths) {
-      if (fs.existsSync(path)) {
-        log(`✅ Chrome encontrado en: ${path}`);
-        return path;
-      }
-    }
-
+    for (const p of candidates) if (fs.existsSync(p)) { log(`✅ Chrome encontrado en: ${p}`); return p; }
     try {
-      const result = execSync('find /root/.cache/puppeteer -name chrome -type f 2>/dev/null || echo ""').toString().trim();
-      if (result) {
-        const chromePath = result.split('\n')[0];
-        log(`✅ Chrome encontrado dinámicamente: ${chromePath}`);
-        return chromePath;
-      }
-    } catch (e) {
-      log('⚠️ No se pudo buscar Chrome dinámicamente');
-    }
-
+      const res = execSync('find /root/.cache/puppeteer -name chrome -type f 2>/dev/null || echo ""')
+        .toString().trim();
+      if (res) { const p = res.split('\n')[0]; log(`✅ Chrome encontrado dinámicamente: ${p}`); return p; }
+    } catch {}
     log('⚠️ Chrome no encontrado, usando configuración por defecto');
     return undefined;
-
-  } catch (error) {
-    log(`⚠️ Error buscando Chrome: ${error.message}`);
+  } catch (e) {
+    log(`⚠️ Error buscando Chrome: ${e.message}`, 'warning');
     return undefined;
   }
 }
 
-// ========================================
-// PROXY: resolver desde PROXY_URL o campos separados
-// ========================================
+// =============== Proxy resolve & verify ===============
 function resolveProxyFromEnv() {
-  // 1) PROXY_URL (p.ej. http://user:pass@host:port)
+  // Preferir PROXY_URL si viene completa
   if (CONFIG.PROXY_URL) {
     try {
       const u = new URL(CONFIG.PROXY_URL);
@@ -116,14 +95,15 @@ function resolveProxyFromEnv() {
 
       return {
         serverArg: `${protocol}://${host}:${port}`,
-        auth: (username && password) ? { username, password } : null
+        auth: (username && password) ? { username, password } : null,
+        debug: `${protocol}://${host}:${port} (URL)`,
       };
     } catch (e) {
       log(`⚠️ PROXY_URL inválida: ${e.message}`, 'warning');
     }
   }
 
-  // 2) Variables separadas
+  // Variables separadas
   const host = CONFIG.PROXY_HOST;
   const port = CONFIG.PROXY_PORT;
   const username = CONFIG.PROXY_USERNAME;
@@ -132,70 +112,51 @@ function resolveProxyFromEnv() {
   if (host && port) {
     return {
       serverArg: `http://${host}:${port}`,
-      auth: (username && password) ? { username, password } : null
+      auth: (username && password) ? { username, password } : null,
+      debug: `http://${host}:${port} (split env)`,
     };
   }
-
-  // 3) Sin proxy
   return null;
 }
 
-// ========================================
-// GESTIÓN DE COOKIES Y ESTADO
-// ========================================
+async function verifyProxyConnectivity(page) {
+  // Bright Data test endpoint: debe devolver 200/OK y un body pequeño
+  const testUrl = 'https://geo.brdtest.com/welcome.txt';
+  log(`🔎 Verificando salida por proxy con: ${testUrl}`);
+  try {
+    const resp = await page.goto(testUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    const status = resp ? resp.status() : 0;
+    const text = resp ? await resp.text() : '';
+    log(`🌐 Proxy check status=${status} body="${(text||'').substring(0,60)}"`);
+    return status >= 200 && status < 400;
+  } catch (e) {
+    log(`❌ Proxy check falló: ${e.message}`, 'error');
+    return false;
+  }
+}
+
+// =============== Cookies / estado ===============
 async function checkCookieExpiration() {
   try {
     if (!process.env.LINKEDIN_COOKIES) {
       log('⚠️ No hay cookies configuradas', 'warning');
       return { expired: true, daysLeft: 0 };
     }
-
     const cookies = JSON.parse(process.env.LINKEDIN_COOKIES);
-    const liAtCookie = cookies.find(c => c.name === 'li_at');
-
-    if (!liAtCookie || !liAtCookie.expires) {
+    const liAt = cookies.find(c => c.name === 'li_at');
+    if (!liAt || !liAt.expires) {
       log('Cookie li_at no encontrada o sin fecha de expiración', 'warning');
       return { expired: false, daysLeft: 30 };
     }
-
-    const expiryDate = new Date(liAtCookie.expires * 1000);
-    const now = new Date();
-    const daysLeft = Math.floor((expiryDate - now) / (1000 * 60 * 60 * 24));
-
+    const expiryDate = new Date(liAt.expires * 1000);
+    const daysLeft = Math.floor((expiryDate - new Date()) / 86400000);
     log(`📅 Cookies expiran en ${daysLeft} días (${expiryDate.toLocaleDateString()})`);
-
     if (daysLeft <= 0) return { expired: true, daysLeft: 0 };
-
-    if (daysLeft <= CONFIG.COOKIE_WARNING_DAYS) {
-      log(`⚠️ ADVERTENCIA: Las cookies expirarán pronto (${daysLeft} días)`, 'warning');
-      await sendCookieWarning(daysLeft);
-    }
-
+    if (daysLeft <= CONFIG.COOKIE_WARNING_DAYS) log(`⚠️ ADVERTENCIA: expirarán pronto (${daysLeft} días)`, 'warning');
     return { expired: false, daysLeft };
-
-  } catch (error) {
-    log(`Error verificando cookies: ${error.message}`, 'error');
+  } catch (e) {
+    log(`Error verificando cookies: ${e.message}`, 'error');
     return { expired: false, daysLeft: null };
-  }
-}
-
-async function sendCookieWarning(daysLeft) {
-  try {
-    try {
-      await base('System Logs').create([{
-        fields: {
-          'Type': 'Cookie Warning',
-          'Message': `Las cookies de LinkedIn expirarán en ${daysLeft} días. Renovarlas pronto.`,
-          'Date': new Date().toISOString(),
-          'Priority': daysLeft <= 2 ? 'High' : 'Medium'
-        }
-      }]);
-      log('📧 Notificación de expiración guardada en Airtable', 'success');
-    } catch (e) {
-      log(`⚠️ Las cookies expiran en ${daysLeft} días. Tabla System Logs no configurada.`, 'warning');
-    }
-  } catch (error) {
-    log(`Error enviando notificación: ${error.message}`, 'warning');
   }
 }
 
@@ -211,127 +172,80 @@ async function logScraperRun(success, postsScraped, error = null) {
           'Status': success ? 'Completed' : 'Failed'
         }
       }]);
-    } catch (e) {
+    } catch {
       log(`Tabla Scraper Runs no configurada (opcional)`, 'warning');
     }
-  } catch (err) {
-    // Silencioso
-  }
+  } catch {}
 }
 
-// ========================================
-// FUNCIONES DE AIRTABLE
-// ========================================
+// =============== Airtable helpers ===============
 async function getActiveProfiles() {
   try {
     const records = await base('Sources')
-      .select({
-        filterByFormula: '{Status} = "Active"',
-        fields: ['Name', 'Profile URL', 'Group', 'Priority']
-      })
+      .select({ filterByFormula: '{Status} = "Active"', fields: ['Name','Profile URL','Group','Priority'] })
       .all();
-
-    return records.map(record => ({
-      id: record.id,
-      name: record.get('Name'),
-      profileUrl: record.get('Profile URL'),
-      group: record.get('Group'),
-      priority: record.get('Priority')
+    return records.map(r => ({
+      id: r.id, name: r.get('Name'),
+      profileUrl: r.get('Profile URL'),
+      group: r.get('Group'), priority: r.get('Priority')
     }));
-  } catch (error) {
-    log(`Error obteniendo perfiles: ${error.message}`, 'error');
-    return [];
-  }
+  } catch (e) { log(`Error obteniendo perfiles: ${e.message}`, 'error'); return []; }
 }
-
 async function postExists(postUrl) {
   try {
-    const records = await base('LinkedIn Posts')
-      .select({
-        filterByFormula: `{Post URL} = "${postUrl}"`,
-        maxRecords: 1
-      })
-      .all();
-
-    return records.length > 0;
-  } catch (error) {
-    log(`Error verificando post: ${error.message}`, 'error');
-    return false;
-  }
+    const recs = await base('LinkedIn Posts')
+      .select({ filterByFormula: `{Post URL} = "${postUrl}"`, maxRecords: 1 }).all();
+    return recs.length > 0;
+  } catch (e) { log(`Error verificando post: ${e.message}`, 'error'); return false; }
 }
-
-async function savePost(postData) {
+async function savePost(data) {
   try {
     await base('LinkedIn Posts').create([{
       fields: {
-        'Author Name': postData.authorName,
-        'Author Profile URL': postData.authorProfileUrl,
-        'Group': postData.group,
-        'Post Content': postData.content,
-        'Post Date': postData.date,
-        'Post URL': postData.postUrl,
-        'Likes': postData.likes || 0,
-        'Comments': postData.comments || 0,
-        'Shares': postData.shares || 0,
-        'Has Media': postData.hasMedia || false,
-        'Media URL': postData.mediaUrl || ''
+        'Author Name': data.authorName,
+        'Author Profile URL': data.authorProfileUrl,
+        'Group': data.group,
+        'Post Content': data.content,
+        'Post Date': data.date,
+        'Post URL': data.postUrl,
+        'Likes': data.likes || 0,
+        'Comments': data.comments || 0,
+        'Shares': data.shares || 0,
+        'Has Media': data.hasMedia || false,
+        'Media URL': data.mediaUrl || ''
       }
     }]);
     return true;
-  } catch (error) {
-    log(`Error guardando post: ${error.message}`, 'error');
-    return false;
-  }
+  } catch (e) { log(`Error guardando post: ${e.message}`, 'error'); return false; }
 }
 
-// ========================================
-// NAVEGACIÓN
-// ========================================
-async function safeGoto(page, url, retries = 3) {
-  for (let i = 0; i < retries; i++) {
+// =============== Navegación ===============
+async function safeGoto(page, url, retries=3) {
+  for (let i=0;i<retries;i++) {
     try {
-      log(`🔄 Navegando a: ${url} (intento ${i + 1}/${retries})`);
-
-      const response = await page.goto(url, {
-        waitUntil: ['domcontentloaded', 'networkidle0'],
+      log(`🔄 Navegando a: ${url} (intento ${i+1}/${retries})`);
+      const resp = await page.goto(url, {
+        waitUntil: ['domcontentloaded','networkidle0'],
         timeout: CONFIG.PAGE_TIMEOUT
       });
+      await delay(2000);
+      const current = page.url();
 
-      await delay(3000);
-
-      const currentUrl = page.url();
-
-      // Error de conexión
-      if (currentUrl.includes('chrome-error://')) {
-        log(`❌ Error de conexión detectado: ${currentUrl}`, 'error');
-        if (i < retries - 1) {
-          log(`⏳ Esperando 10s antes de reintentar...`);
-          await delay(10000);
-          continue;
-        }
+      if (current.includes('chrome-error://')) {
+        log(`❌ Error de conexión detectado: ${current}`, 'error');
+        if (i < retries-1) { log('⏳ Esperando 10s antes de reintentar...'); await delay(10000); continue; }
         return false;
       }
-
-      // Respuesta HTTP
-      if (response && response.status() >= 400) {
-        log(`⚠️ Respuesta HTTP ${response.status()}`, 'warning');
-        if (i < retries - 1) continue;
+      if (resp && resp.status() >= 400) {
+        log(`⚠️ HTTP ${resp.status()} en ${url}`, 'warning');
+        if (i < retries-1) continue;
       }
-
-      log(`✅ Navegación exitosa a: ${currentUrl}`, 'success');
+      log(`✅ Navegación exitosa a: ${current}`, 'success');
       return true;
-
-    } catch (error) {
-      log(`⚠️ Error navegando (intento ${i + 1}): ${error.message}`, 'warning');
-
-      if (i < retries - 1) {
-        const waitTime = (i + 1) * 5000;
-        log(`⏳ Esperando ${waitTime/1000}s antes de reintentar...`);
-        await delay(waitTime);
-      } else {
-        log(`❌ No se pudo navegar después de ${retries} intentos`, 'error');
-        return false;
-      }
+    } catch (e) {
+      log(`⚠️ Error navegando (intento ${i+1}): ${e.message}`, 'warning');
+      if (i < retries-1) { const w=(i+1)*5000; log(`⏳ Esperando ${w/1000}s...`); await delay(w); }
+      else return false;
     }
   }
   return false;
@@ -339,615 +253,290 @@ async function safeGoto(page, url, retries = 3) {
 
 async function loadCookies(page) {
   try {
-    if (!process.env.LINKEDIN_COOKIES) {
-      log('❌ Variable LINKEDIN_COOKIES no configurada', 'error');
-      return false;
-    }
-
+    if (!process.env.LINKEDIN_COOKIES) { log('❌ LINKEDIN_COOKIES no configurada', 'error'); return false; }
     const cookies = JSON.parse(process.env.LINKEDIN_COOKIES);
-
-    if (!Array.isArray(cookies) || cookies.length === 0) {
-      log('❌ Cookies vacías o inválidas', 'error');
-      return false;
-    }
-
+    if (!Array.isArray(cookies) || cookies.length === 0) { log('❌ Cookies vacías/invalidas','error'); return false; }
     log(`📦 Cargando ${cookies.length} cookies...`);
-
-    // Navegar primero a LinkedIn con reintentos
     const navigated = await safeGoto(page, 'https://www.linkedin.com');
-
-    if (!navigated) {
-      log('❌ No se pudo cargar la página inicial de LinkedIn', 'error');
-      return false;
-    }
-
-    await delay(3000);
-
-    // Eliminar cookies existentes
-    const existingCookies = await page.cookies();
-    if (existingCookies.length > 0) {
-      await page.deleteCookie(...existingCookies);
-      log('🗑️ Cookies previas eliminadas');
-    }
-
-    // Validar y cargar nuevas cookies
-    const validCookies = cookies.filter(cookie => cookie.name && cookie.value && cookie.domain);
-
-    if (validCookies.length === 0) {
-      log('❌ No hay cookies válidas para cargar', 'error');
-      return false;
-    }
-
-    await page.setCookie(...validCookies);
-    log(`✅ ${validCookies.length} cookies cargadas`);
-
+    if (!navigated) return false;
+    await delay(1500);
+    const existing = await page.cookies();
+    if (existing.length) { await page.deleteCookie(...existing); log('🗑️ Cookies previas eliminadas'); }
+    const valid = cookies.filter(c => c.name && c.value && c.domain);
+    if (!valid.length) { log('❌ No hay cookies válidas para setear','error'); return false; }
+    await page.setCookie(...valid);
+    log(`✅ ${valid.length} cookies cargadas`);
     return true;
-
-  } catch (error) {
-    log(`❌ Error cargando cookies: ${error.message}`, 'error');
-    return false;
-  }
+  } catch (e) { log(`❌ Error cargando cookies: ${e.message}`, 'error'); return false; }
 }
 
 async function checkIfLoggedIn(page) {
   try {
-    await delay(5000);
+    await delay(3000);
+    const url = page.url();
+    if (url.includes('chrome-error://')) return false;
+    if (url.includes('/login') || url.includes('/checkpoint') || url.includes('/uas/')) return false;
 
-    const currentUrl = page.url();
-    log(`🔗 URL actual: ${currentUrl}`);
-
-    if (currentUrl.includes('chrome-error://')) {
-      log('❌ Error de conexión - no se puede verificar login', 'error');
-      return false;
-    }
-
-    if (currentUrl.includes('/login') || currentUrl.includes('/checkpoint') || currentUrl.includes('/uas/')) {
-      log('❌ Detectado redirect a login/checkpoint/verificación', 'error');
-      try {
-        await page.screenshot({ path: '/tmp/linkedin-blocked.png', fullPage: true });
-        log('📸 Screenshot guardado en /tmp/linkedin-blocked.png');
-      } catch (e) {}
-      return false;
-    }
-
-    const checks = await page.evaluate(() => {
-      return {
-        hasGlobalNav: document.querySelector('nav.global-nav, nav[aria-label="Primary Navigation"]') !== null,
-        hasProfileIcon: document.querySelector('[data-control-name="nav.settings"], .global-nav__me') !== null,
-        hasFeedContent: document.querySelector('.feed-shared-update-v2, .scaffold-finite-scroll') !== null,
-        hasSearchBar: document.querySelector('input[placeholder*="Search"], input[placeholder*="Buscar"]') !== null,
-        hasMessaging: document.querySelector('[data-control-name="nav.messaging"], [href*="/messaging"]') !== null,
-        hasLoginForm: document.querySelector('input[name="session_key"], input[type="email"]') !== null,
-        url: window.location.href,
-        title: document.title
-      };
-    });
-
-    log(`🔍 Verificando login:`);
-    log(`  Título: ${checks.title}`);
-    log(`  GlobalNav: ${checks.hasGlobalNav ? '✓' : '✗'}`);
-    log(`  ProfileIcon: ${checks.hasProfileIcon ? '✓' : '✗'}`);
-    log(`  FeedContent: ${checks.hasFeedContent ? '✓' : '✗'}`);
-    log(`  SearchBar: ${checks.hasSearchBar ? '✓' : '✗'}`);
-    log(`  LoginForm: ${checks.hasLoginForm ? '✓' : '✗'}`);
-
-    if (checks.hasLoginForm) {
-      log('❌ Formulario de login detectado - NO logueado', 'error');
-      return false;
-    }
-
-    const positiveChecks = [
-      checks.hasGlobalNav,
-      checks.hasProfileIcon,
-      checks.hasFeedContent,
-      checks.hasSearchBar,
-      checks.hasMessaging
-    ].filter(Boolean).length;
-
-    log(`📊 Checks positivos: ${positiveChecks}/5`);
-
-    const urlCheck = checks.url.includes('/feed') ||
-                     checks.url.includes('/mynetwork') ||
-                     checks.url.includes('/in/') ||
-                     checks.url.includes('/jobs');
-
-    const isLoggedIn = positiveChecks >= 2 || (positiveChecks >= 1 && urlCheck);
-
-    if (isLoggedIn) {
-      log('✅ Login confirmado', 'success');
-    } else {
-      log('❌ Login fallido', 'error');
-    }
-
-    return isLoggedIn;
-
-  } catch (error) {
-    log(`❌ Error verificando login: ${error.message}`, 'error');
-    return false;
-  }
+    const checks = await page.evaluate(() => ({
+      hasGlobalNav: !!document.querySelector('nav.global-nav, nav[aria-label="Primary Navigation"]'),
+      hasProfileIcon: !!document.querySelector('[data-control-name="nav.settings"], .global-nav__me'),
+      hasFeedContent: !!document.querySelector('.feed-shared-update-v2, .scaffold-finite-scroll'),
+      hasSearchBar: !!document.querySelector('input[placeholder*="Search"], input[placeholder*="Buscar"]'),
+      hasMessaging: !!document.querySelector('[data-control-name="nav.messaging"], [href*="/messaging"]'),
+      hasLoginForm: !!document.querySelector('input[name="session_key"], input[type="email"]'),
+      title: document.title
+    }));
+    if (checks.hasLoginForm) return false;
+    const positives = [checks.hasGlobalNav, checks.hasProfileIcon, checks.hasFeedContent, checks.hasSearchBar, checks.hasMessaging].filter(Boolean).length;
+    return positives >= 2;
+  } catch { return false; }
 }
 
 async function loginWithCookies(page) {
-  try {
-    log('🍪 Intentando login con cookies...');
+  log('🍪 Intentando login con cookies...');
+  const ok = await loadCookies(page);
+  if (!ok) return false;
 
-    const cookiesLoaded = await loadCookies(page);
-    if (!cookiesLoaded) {
-      log('❌ No se pudieron cargar las cookies', 'error');
-      return false;
-    }
+  log('🔄 Navegando al feed...');
+  const nav = await safeGoto(page, 'https://www.linkedin.com/feed/');
+  if (!nav) return false;
 
-    log('🔄 Navegando al feed...');
-    const navigated = await safeGoto(page, 'https://www.linkedin.com/feed/');
+  const isIn = await checkIfLoggedIn(page);
+  if (isIn) { log('✅ Login con cookies exitoso!', 'success'); return true; }
 
-    if (!navigated) {
-      log('❌ No se pudo navegar al feed', 'error');
-      return false;
-    }
-
-    await delay(8000);
-
-    const isLoggedIn = await checkIfLoggedIn(page);
-
-    if (isLoggedIn) {
-      log('✅ Login con cookies exitoso!', 'success');
-      return true;
-    }
-
-    log('🔄 Segundo intento: refrescando página...');
-    await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
-    await delay(5000);
-
-    const secondCheck = await checkIfLoggedIn(page);
-
-    if (secondCheck) {
-      log('✅ Login exitoso en segundo intento!', 'success');
-      return true;
-    }
-
-    log('❌ Cookies no válidas - necesitan renovarse', 'error');
-    await sendCookieWarning(0);
-    return false;
-
-  } catch (error) {
-    log(`❌ Error en login: ${error.message}`, 'error');
-    return false;
-  }
+  log('🔄 Refrescando...');
+  await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
+  await delay(3000);
+  return await checkIfLoggedIn(page);
 }
 
 async function loginToLinkedIn(page) {
-  try {
-    const cookieStatus = await checkCookieExpiration();
-
-    if (cookieStatus.expired) {
-      log('❌ Las cookies han expirado. Por favor renuévalas.', 'error');
-      return false;
-    }
-
-    const success = await loginWithCookies(page);
-
-    if (!success) {
-      log('❌ Login falló. Las cookies necesitan renovarse.', 'error');
-      log('💡 Posibles causas:', 'warning');
-      log('   - LinkedIn detectó la IP del servidor como sospechosa', 'warning');
-      log('   - Las cookies se generaron desde otra IP', 'warning');
-      log('   - Necesitas verificación de seguridad', 'warning');
-      log('   - Problemas de conectividad de red', 'warning');
-      log('   - SOLUCIÓN RECOMENDADA: Usar proxy residencial con sesión estable', 'warning');
-    }
-
-    return success;
-
-  } catch (error) {
-    log(`Error crítico en login: ${error.message}`, 'error');
-    return false;
+  const ck = await checkCookieExpiration();
+  if (ck.expired) { log('❌ Cookies expiradas', 'error'); return false; }
+  const success = await loginWithCookies(page);
+  if (!success) {
+    log('❌ Login falló. Verifica cookies/proxy/sesión estable.', 'error');
   }
+  return success;
 }
 
-// ========================================
-// SCRAPING DE POSTS
-// ========================================
+// =============== Scraping ===============
 async function scrapeProfilePosts(page, profileUrl, authorName, group) {
   try {
     log(`📊 Extrayendo posts de: ${authorName}`);
-
     let activityUrl;
     if (profileUrl.includes('/company/')) {
-      const cleanUrl = profileUrl.replace(/\/(posts?\/?)$/, '');
-      activityUrl = `${cleanUrl}/posts/?feedView=all`;
-      log(`🏢 Perfil de empresa detectado`);
+      const clean = profileUrl.replace(/\/(posts?\/?)$/, '');
+      activityUrl = `${clean}/posts/?feedView=all`;
+      log(`🏢 Empresa detectada`);
     } else if (profileUrl.includes('/in/')) {
       activityUrl = `${profileUrl.replace(/\/$/, '')}/recent-activity/all/`;
-      log(`👤 Perfil personal detectado`);
+      log(`👤 Persona detectada`);
     } else {
       log(`⚠️ Tipo de perfil no reconocido: ${profileUrl}`, 'error');
       return 0;
     }
 
-    log(`🔗 URL: ${activityUrl}`);
-
-    const navigated = await safeGoto(page, activityUrl);
-    if (!navigated) {
-      log(`No se pudo cargar perfil de ${authorName}`, 'error');
-      return 0;
-    }
-
-    await delay(5000);
-
-    log('📜 Scrolleando para cargar contenido...');
-    for (let i = 0; i < 8; i++) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-      await delay(2500);
-    }
+    const nav = await safeGoto(page, activityUrl);
+    if (!nav) return 0;
 
     await delay(3000);
+    for (let i=0;i<8;i++){ await page.evaluate(()=>window.scrollBy(0, window.innerHeight)); await delay(2000); }
+    await delay(2000);
 
-    // Extraer posts con métricas
     const posts = await page.evaluate((maxPosts) => {
-      const results = [];
-
-      function extractNumber(text) {
-        if (!text) return 0;
-        const cleaned = text.replace(/[^\d,\.KMB]/gi, '').trim();
-        if (!cleaned) return 0;
-
-        let multiplier = 1;
-        if (text.toUpperCase().includes('K')) multiplier = 1000;
-        if (text.toUpperCase().includes('M')) multiplier = 1000000;
-        if (text.toUpperCase().includes('B')) multiplier = 1000000000;
-
-        const num = parseFloat(cleaned.replace(/,/g, ''));
-        return isNaN(num) ? 0 : Math.round(num * multiplier);
-      }
-
-      function extractMetrics(postElement) {
-        const metrics = { likes: 0, comments: 0, shares: 0 };
-
-        try {
-          const socialActionsBar = postElement.querySelector('.social-details-social-activity, .social-details-social-counts');
-
-          if (socialActionsBar) {
-            const reactionButton = socialActionsBar.querySelector('[aria-label*="reaction"], button[aria-label*="Like"], span[aria-hidden="true"]');
-            if (reactionButton) {
-              const reactionText = reactionButton.textContent || reactionButton.getAttribute('aria-label') || '';
-              metrics.likes = extractNumber(reactionText);
-            }
-
-            const commentButton = socialActionsBar.querySelector('[aria-label*="comment"]');
-            if (commentButton) {
-              const commentText = commentButton.textContent || commentButton.getAttribute('aria-label') || '';
-              metrics.comments = extractNumber(commentText);
-            }
-
-            const shareButton = socialActionsBar.querySelector('[aria-label*="repost"], [aria-label*="share"]');
-            if (shareButton) {
-              const shareText = shareButton.textContent || shareButton.getAttribute('aria-label') || '';
-              metrics.shares = extractNumber(shareText);
-            }
-          }
-
-          if (metrics.likes === 0 || metrics.comments === 0) {
-            const actionButtons = postElement.querySelectorAll('button[aria-label], .social-details-social-counts__item');
-
-            actionButtons.forEach(btn => {
-              const label = btn.getAttribute('aria-label') || btn.textContent || '';
-              const lowerLabel = label.toLowerCase();
-
-              if (lowerLabel.includes('like') || lowerLabel.includes('reaction')) {
-                const num = extractNumber(label);
-                if (num > metrics.likes) metrics.likes = num;
-              }
-
-              if (lowerLabel.includes('comment')) {
-                const num = extractNumber(label);
-                if (num > metrics.comments) metrics.comments = num;
-              }
-
-              if (lowerLabel.includes('repost') || lowerLabel.includes('share')) {
-                const num = extractNumber(label);
-                if (num > metrics.shares) metrics.shares = num;
-              }
-            });
-          }
-
-        } catch (err) {
-          console.error('Error extrayendo métricas:', err);
-        }
-
-        return metrics;
-      }
-
+      const out = [];
       const selectors = [
-        'div.feed-shared-update-v2',
-        'li.profile-creator-shared-feed-update__container',
-        'article.feed-shared-update-v2',
-        'li.profile-creator-shared-feed-update',
+        'div.feed-shared-update-v2','li.profile-creator-shared-feed-update__container',
+        'article.feed-shared-update-v2','li.profile-creator-shared-feed-update',
         'div[data-urn*="activity"]'
       ];
-
-      let postElements = [];
-      for (const selector of selectors) {
-        postElements = document.querySelectorAll(selector);
-        if (postElements.length > 0) break;
+      function extractNumber(t){ if(!t) return 0; const s=t.replace(/[^\d,\.KMB]/gi,'').trim();
+        if(!s) return 0; let m=1; const T=t.toUpperCase(); if(T.includes('K')) m=1e3; if(T.includes('M')) m=1e6; if(T.includes('B')) m=1e9;
+        const n=parseFloat(s.replace(/,/g,'')); return isNaN(n)?0:Math.round(n*m);
       }
-
-      if (postElements.length === 0) {
-        console.log('⚠️ No se encontraron posts');
-        return [];
-      }
-
-      for (let i = 0; i < Math.min(postElements.length, maxPosts); i++) {
-        const post = postElements[i];
-
-        try {
-          const contentSelectors = [
-            '.feed-shared-update-v2__description',
-            '.update-components-text',
-            '.feed-shared-inline-show-more-text',
-            '.break-words'
-          ];
-
-          let content = '';
-          for (const sel of contentSelectors) {
-            const el = post.querySelector(sel);
-            if (el && el.innerText && el.innerText.trim().length > 10) {
-              content = el.innerText.trim();
-              break;
-            }
-          }
-
-          if (!content || content.length < 10) continue;
-
-          let date = new Date().toISOString();
-          const timeEl = post.querySelector('time, [datetime]');
-          if (timeEl) {
-            date = timeEl.getAttribute('datetime') || timeEl.innerText || date;
-          }
-
-          let postUrl = '';
-          const linkEl = post.querySelector('a[href*="/posts/"], a[href*="/activity-"]');
-          if (linkEl) {
-            postUrl = linkEl.href;
-          }
-
-          if (!postUrl) continue;
-
-          const metrics = extractMetrics(post);
-
-          const hasImage = post.querySelector('img[src*="media"], img[src*="dms/image"]') !== null;
-          const hasVideo = post.querySelector('video, [data-test-id="video"]') !== null;
-
-          results.push({
-            content: content.substring(0, 1000),
-            date,
-            postUrl,
-            likes: metrics.likes,
-            comments: metrics.comments,
-            shares: metrics.shares,
-            hasMedia: hasImage || hasVideo,
-            mediaUrl: ''
-          });
-
-        } catch (err) {
-          console.error(`Error en post ${i}:`, err.message);
+      function metrics(el){ const m={likes:0,comments:0,shares:0};
+        const bar = el.querySelector('.social-details-social-activity, .social-details-social-counts');
+        if (bar){
+          const r = bar.querySelector('[aria-label*="reaction"], button[aria-label*="Like"], span[aria-hidden="true"]');
+          if (r){ const t=r.textContent||r.getAttribute('aria-label')||''; m.likes=extractNumber(t); }
+          const c = bar.querySelector('[aria-label*="comment"]');
+          if (c){ const t=c.textContent||c.getAttribute('aria-label')||''; m.comments=extractNumber(t); }
+          const s = bar.querySelector('[aria-label*="repost"], [aria-label*="share"]');
+          if (s){ const t=s.textContent||s.getAttribute('aria-label')||''; m.shares=extractNumber(t); }
         }
+        if (m.likes===0 || m.comments===0){
+          el.querySelectorAll('button[aria-label], .social-details-social-counts__item').forEach(btn=>{
+            const lab=btn.getAttribute('aria-label')||btn.textContent||''; const L=lab.toLowerCase();
+            if (L.includes('like')||L.includes('reaction')) m.likes=Math.max(m.likes, extractNumber(lab));
+            if (L.includes('comment')) m.comments=Math.max(m.comments, extractNumber(lab));
+            if (L.includes('repost')||L.includes('share')) m.shares=Math.max(m.shares, extractNumber(lab));
+          });
+        }
+        return m;
       }
-
-      return results;
+      let nodes=[]; for (const sel of selectors){ nodes=document.querySelectorAll(sel); if(nodes.length) break; }
+      if (!nodes.length) return out;
+      for (let i=0;i<Math.min(nodes.length,maxPosts);i++){
+        const post = nodes[i];
+        try{
+          const contentSel=['.feed-shared-update-v2__description','.update-components-text','.feed-shared-inline-show-more-text','.break-words'];
+          let content=''; for (const s of contentSel){ const el=post.querySelector(s); if(el&&el.innerText&&el.innerText.trim().length>10){ content=el.innerText.trim(); break; } }
+          if (!content || content.length<10) continue;
+          let date=new Date().toISOString(); const timeEl=post.querySelector('time, [datetime]'); if (timeEl) date=timeEl.getAttribute('datetime')||timeEl.innerText||date;
+          let postUrl=''; const link=post.querySelector('a[href*="/posts/"], a[href*="/activity-"]'); if (link) postUrl=link.href; if (!postUrl) continue;
+          const m=metrics(post);
+          const hasImage=!!post.querySelector('img[src*="media"], img[src*="dms/image"]');
+          const hasVideo=!!post.querySelector('video, [data-test-id="video"]');
+          out.push({ content: content.substring(0,1000), date, postUrl, likes:m.likes, comments:m.comments, shares:m.shares, hasMedia:(hasImage||hasVideo), mediaUrl:'' });
+        }catch(e){}
+      }
+      return out;
     }, CONFIG.MAX_POSTS_PER_PROFILE);
 
     log(`📝 Encontrados ${posts.length} posts`);
-
-    if (posts.length > 0) {
-      const totalLikes = posts.reduce((sum, p) => sum + p.likes, 0);
-      const totalComments = posts.reduce((sum, p) => sum + p.comments, 0);
-      const totalShares = posts.reduce((sum, p) => sum + p.shares, 0);
-      log(`📊 Total: ${totalLikes} likes, ${totalComments} comments, ${totalShares} shares`);
-    }
-
-    let newPostsCount = 0;
-    for (const post of posts) {
-      const exists = await postExists(post.postUrl);
-
-      if (!exists) {
-        const saved = await savePost({
-          authorName,
-          authorProfileUrl: profileUrl,
-          group,
-          ...post
-        });
-
-        if (saved) {
-          newPostsCount++;
-          log(`  ✓ Guardado: ${post.likes}L ${post.comments}C ${post.shares}S`);
-        }
-        await delay(500);
+    let newCount=0;
+    for (const p of posts){
+      const exists = await postExists(p.postUrl);
+      if (!exists){
+        const saved = await savePost({ authorName, authorProfileUrl: profileUrl, group, ...p });
+        if (saved) { newCount++; log(`  ✓ Guardado: ${p.likes}L ${p.comments}C ${p.shares}S`); }
+        await delay(400);
       }
     }
+    log(`✅ ${newCount} posts nuevos guardados`, 'success');
+    return newCount;
 
-    log(`✅ ${newPostsCount} posts nuevos guardados`, 'success');
-    return newPostsCount;
-
-  } catch (error) {
-    log(`Error scraping ${authorName}: ${error.message}`, 'error');
+  } catch (e) {
+    log(`Error scraping ${authorName}: ${e.message}`, 'error');
     return 0;
   }
 }
 
-// ========================================
-// EJECUCIÓN
-// ========================================
+// =============== Main runner ===============
 async function runScraper() {
   log('🚀 Iniciando scraper de LinkedIn con Stealth...');
 
+  // ---- Proxy obligatorio + diagnóstico ----
+  const proxyCfg = resolveProxyFromEnv();
+  const diag = {
+    PROXY_URL_present: !!CONFIG.PROXY_URL,
+    PROXY_HOST_present: !!CONFIG.PROXY_HOST,
+    PROXY_PORT_present: !!CONFIG.PROXY_PORT,
+    PROXY_USERNAME_present: !!CONFIG.PROXY_USERNAME,
+    PROXY_PASSWORD_present: !!CONFIG.PROXY_PASSWORD
+  };
+  log(`🔧 Proxy env diag: ${JSON.stringify(diag)}`);
+
+  if (!proxyCfg) {
+    const msg = 'PROXY obligatorio no configurado. Define PROXY_URL o PROXY_HOST/PORT + PROXY_USERNAME/PROXY_PASSWORD';
+    if (CONFIG.REQUIRE_PROXY) {
+      log(`❌ ${msg}`, 'error');
+      process.exit(1);
+    } else {
+      log(`ℹ️ ${msg}`, 'warning');
+    }
+  } else {
+    const safe = proxyCfg.debug;
+    log(`🌐 Usando proxy: ${safe}`);
+  }
+
   let browser;
-  let success = false;
-  let totalNewPosts = 0;
-  let error = null;
+  let success=false, totalNew=0, fatal=null;
 
   try {
-    await checkCookieExpiration();
-
     const profiles = await getActiveProfiles();
-
-    if (profiles.length === 0) {
-      log('No hay perfiles activos', 'warning');
-      return;
-    }
-
+    if (!profiles.length) { log('No hay perfiles activos','warning'); return; }
     log(`📋 Perfiles a monitorear: ${profiles.length}`);
 
-    // Argumentos para Railway
-    const browserArgs = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu',
-      '--disable-web-security',
+    const args = [
+      '--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas','--no-first-run','--no-zygote',
+      '--single-process','--disable-gpu','--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
       '--window-size=1920x1080',
       '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-      '--disable-background-networking',
-      '--disable-default-apps',
-      '--disable-extensions',
-      '--disable-sync',
-      '--metrics-recording-only',
-      '--mute-audio',
-      '--no-default-browser-check'
+      '--disable-background-networking','--disable-default-apps',
+      '--disable-extensions','--disable-sync','--metrics-recording-only',
+      '--mute-audio','--no-default-browser-check'
     ];
-
-    // Resolver proxy (URL o variables separadas)
-    const proxyCfg = resolveProxyFromEnv();
-    if (proxyCfg) {
-      browserArgs.push(`--proxy-server=${proxyCfg.serverArg}`);
-      const safe = proxyCfg.serverArg.replace(/:[^:]*@/,'://****@');
-      log(`🌐 Usando proxy: ${safe}`);
-    } else {
-      log('ℹ️ Sin proxy (PROXY_URL o PROXY_HOST/PORT no definidos)');
-    }
+    if (proxyCfg) args.push(`--proxy-server=${proxyCfg.serverArg}`);
 
     const chromePath = findChromePath();
-
     browser = await puppeteer.launch({
       headless: 'new',
-      args: browserArgs,
-      executablePath: chromePath,
-      ignoreHTTPSErrors: true,
-      dumpio: false,
-      defaultViewport: null
+      args, executablePath: chromePath,
+      ignoreHTTPSErrors: true, dumpio: false, defaultViewport: null
     });
 
     const page = await browser.newPage();
-
-    // Timeouts
     page.setDefaultTimeout(CONFIG.PAGE_TIMEOUT);
     page.setDefaultNavigationTimeout(CONFIG.PAGE_TIMEOUT);
 
-    // Autenticación del proxy si hay credenciales
-    if (proxyCfg?.auth) {
-      await page.authenticate(proxyCfg.auth);
-      log('✅ Autenticación de proxy aplicada');
-    }
+    if (proxyCfg?.auth) { await page.authenticate(proxyCfg.auth); log('✅ Autenticación de proxy aplicada'); }
 
-    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setViewport({ width:1920, height:1080 });
 
-    // Interceptar requests (no bloquear stylesheet)
+    // Interceptor (no bloquear stylesheet)
     await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const type = req.resourceType();
-      if (['image', 'media', 'font'].includes(type)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
+    page.on('request', req => {
+      const t = req.resourceType();
+      if (['image','media','font'].includes(t)) req.abort(); else req.continue();
     });
 
-    const loginSuccess = await loginToLinkedIn(page);
-
-    if (!loginSuccess) {
-      throw new Error('No se pudo iniciar sesión - cookies inválidas o bloqueadas por IP');
+    // ---- Verificación de salida por proxy antes de LinkedIn ----
+    if (proxyCfg) {
+      const ok = await verifyProxyConnectivity(page);
+      if (!ok) {
+        throw new Error('La verificación de salida por proxy falló. Revisa credenciales/allowlist/variables.');
+      }
     }
 
-    // Scraping de perfiles
+    // ---- Login y scraping ----
+    const loginOK = await loginToLinkedIn(page);
+    if (!loginOK) throw new Error('No se pudo iniciar sesión - cookies inválidas o bloqueadas por IP');
+
     log('🎯 Iniciando extracción de posts...');
-
-    for (let i = 0; i < profiles.length; i++) {
-      const profile = profiles[i];
-
-      log(`\n[${i + 1}/${profiles.length}] Procesando: ${profile.name}`);
-
-      try {
-        const newPosts = await scrapeProfilePosts(
-          page,
-          profile.profileUrl,
-          profile.name,
-          profile.group
-        );
-
-        totalNewPosts += newPosts;
-
-        if (i < profiles.length - 1) {
-          const waitTime = CONFIG.DELAY_BETWEEN_PROFILES;
-          log(`⏳ Esperando ${waitTime/1000}s antes del siguiente perfil...`);
-          await delay(waitTime);
-        }
-
-      } catch (error) {
-        log(`❌ Error procesando ${profile.name}: ${error.message}`, 'error');
-        continue;
-      }
+    for (let i=0;i<profiles.length;i++){
+      const p = profiles[i];
+      log(`\n[${i+1}/${profiles.length}] Procesando: ${p.name}`);
+      try{
+        const n = await scrapeProfilePosts(page, p.profileUrl, p.name, p.group);
+        totalNew += n;
+        if (i < profiles.length-1){ log(`⏳ Esperando ${CONFIG.DELAY_BETWEEN_PROFILES/1000}s...`); await delay(CONFIG.DELAY_BETWEEN_PROFILES); }
+      }catch(e){ log(`❌ Error procesando ${p.name}: ${e.message}`, 'error'); }
     }
 
     success = true;
-    log(`\n✅ Scraping completado. ${totalNewPosts} posts nuevos guardados`, 'success');
+    log(`\n✅ Scraping completado. ${totalNew} posts nuevos guardados`, 'success');
 
-  } catch (err) {
-    error = err.message;
-    log(`❌ Error fatal: ${error}`, 'error');
+  } catch (e) {
+    fatal = e.message;
+    log(`❌ Error fatal: ${fatal}`, 'error');
   } finally {
-    if (browser) {
-      await browser.close();
-      log('🔒 Browser cerrado');
-    }
-
-    await logScraperRun(success, totalNewPosts, error);
+    if (browser) { await browser.close(); log('🔒 Browser cerrado'); }
+    await logScraperRun(success, totalNew, fatal);
   }
 }
 
-// ========================================
-// ENTRADA PRINCIPAL
-// ========================================
+// =============== Bootstrap ===============
 log('📱 Aplicación iniciada con Stealth Plugin');
 log('🔔 Sistema de monitoreo de cookies activo');
 
-// Verificar variables de entorno críticas
 if (!process.env.LINKEDIN_COOKIES) {
   log('❌ ERROR: Variable LINKEDIN_COOKIES no configurada', 'error');
-  log('💡 Por favor configura las cookies en Railway', 'warning');
   process.exit(1);
 }
-
 if (!process.env.AIRTABLE_API_KEY || !process.env.AIRTABLE_BASE_ID) {
   log('❌ ERROR: Variables de Airtable no configuradas', 'error');
   process.exit(1);
 }
 
-// Ejecutar inmediatamente
-runScraper().catch(err => {
-  log(`Error fatal: ${err.message}`, 'error');
-  process.exit(1);
-});
+runScraper().catch(err => { log(`Error fatal: ${err.message}`, 'error'); process.exit(1); });
 
-// Programar ejecuciones periódicas
 cron.schedule(CONFIG.CRON_SCHEDULE, () => {
   log('⏰ Ejecutando tarea programada...');
-  runScraper().catch(err => {
-    log(`Error en tarea programada: ${err.message}`, 'error');
-  });
+  runScraper().catch(err => { log(`Error en tarea programada: ${err.message}`, 'error'); });
 });
 
 log(`⏱️ Cron configurado: ${CONFIG.CRON_SCHEDULE}`);
